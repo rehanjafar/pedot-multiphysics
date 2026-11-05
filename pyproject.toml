@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pedot-multiphysics"
+version = "0.1.0"
+description = "Multiphysics simulation of PEDOT electropolymerization"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Rehan Lab"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "numpy>=1.24,<3",
+    "scipy>=1.10,<2",
+    "matplotlib>=3.7,<4",
+    "pandas>=2.0,<3",
+    "statsmodels>=0.14,<1",
+    "jinja2>=3.1,<4",
+]
+
+[project.optional-dependencies]
+viz3d = [
+    "pyvista>=0.42,<1",
+]
+io = [
+    "pyarrow>=14,<19",
+    "imageio>=2.31,<3",
+    "imageio[ffmpeg]",
+]
+dev = [
+    "pytest>=7.4,<9",
+    "pytest-cov>=4.1,<6",
+    "ruff>=0.1,<1",
+    "mypy>=1.5,<2",
+]
+all = [
+    "pedot-multiphysics[viz3d,io,dev]",
+]
+
+[project.scripts]
+pedot-sim = "pedot_sim.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pedot_sim = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"

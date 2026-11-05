@@ -1,0 +1,74 @@
+{
+  "geometry": {
+    "compartment_width": 0.01,
+    "compartment_height": 0.01,
+    "bridge_width": 0.002,
+    "bridge_length": 0.005,
+    "electrode_length": 0.003,
+    "electrode_y_fraction": 0.5,
+    "geometry_type": "narrow"
+  },
+  "waveform": {
+    "V_DC": 2.0,
+    "V_AC": 1.0,
+    "frequency": 10.0,
+    "waveform_type": "sinusoidal",
+    "duty_cycle": 0.5,
+    "adc_ratio": 0.7,
+    "rest_fraction": 0.0
+  },
+  "physics": {
+    "physics_stage": "B",
+    "diffusion_coefficient": 6.5e-10,
+    "viscosity": 0.003,
+    "conductivity": 1.0,
+    "ionic_strength": 0.1,
+    "C_bulk": 50.0,
+    "k_rxn": 0.001,
+    "j0": 10.0,
+    "alpha": 0.5,
+    "n_electrons": 2,
+    "beta_field": 0.01,
+    "z_species": 1,
+    "T": 298.15
+  },
+  "numerical": {
+    "Nx": 80,
+    "Ny": 80,
+    "dt": 0.01,
+    "t_end": 100.0,
+    "n_snapshots": 10,
+    "implicit_theta": 0.5,
+    "laplace_tol": 1e-6,
+    "laplace_max_iter": 10000,
+    "adaptive_dt": false,
+    "cfl_safety": 0.8
+  },
+  "nucleation": {
+    "enable_noise": true,
+    "noise_amplitude": 1e-9,
+    "nucleation_rate": 1000.0,
+    "seed": 42
+  },
+  "output": {
+    "save_fields": false,
+    "save_animations": false,
+    "dpi": 200,
+    "animation_fps": 20,
+    "figure_format": "png"
+  },
+  "batch": {
+    "campaign_id": "dense_001",
+    "sweep_type": "lhs",
+    "frequencies": [1.0, 10.0, 100.0],
+    "D_levels": ["low", "mid", "high"],
+    "geometries": ["narrow", "wide"],
+    "n_replicates": 1,
+    "max_workers": 8,
+    "n_dense_samples": 500,
+    "freq_range": [0.5, 200.0],
+    "D_range": [5e-11, 5e-9],
+    "V_DC_range": [0.5, 4.0],
+    "V_AC_range": [0.2, 3.0]
+  }
+}

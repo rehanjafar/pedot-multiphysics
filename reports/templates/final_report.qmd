@@ -1,0 +1,94 @@
+---
+title: "Multiphysics Simulation of PEDOT Electropolymerization"
+subtitle: "Waveform-Controlled Electropolymerization for Anisotropic Conductive Polymer Films"
+author: "Rehan Jafar"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    self-contained: true
+  pdf:
+    toc: true
+    number-sections: true
+    documentclass: article
+    geometry: margin=1in
+bibliography: references.bib
+---
+
+# Abstract
+
+This report presents results from a multiphysics simulation campaign studying
+waveform-controlled PEDOT electropolymerization in a two-compartment salt-bridge
+bipolar electrochemical system.
+
+# Research Question & Hypothesis
+
+**Research Question:** How do variations in waveform parameters, including frequency,
+amplitude, and DC offset, influence the field-diffusion dynamics in a modelled
+two-compartment salt-bridge electropolymerization system?
+
+**Hypothesis:**
+
+- Uniformity (low AI) when $\tau_{diff} \ll \tau_{rxn}$
+- Anisotropy (high AI) when $\tau_{diff} > \tau_{rxn}$
+
+# Governing Equations
+
+## Stage A: Diffusion-Reaction
+
+$$\frac{\partial C}{\partial t} = D \nabla^2 C - R$$
+
+## Stage B: Electric Field
+
+$$\nabla^2 V = 0, \quad \mathbf{E} = -\nabla V$$
+
+## Stage C: Nernst-Planck
+
+$$\frac{\partial C}{\partial t} = \nabla \cdot \left( D\nabla C + \frac{zFD}{RT}C\nabla V \right) - R$$
+
+## Stage D: Butler-Volmer
+
+$$j = j_0 \frac{C}{C_{ref}} \left[ e^{\alpha nF\eta/RT} - e^{-(1-\alpha)nF\eta/RT} \right]$$
+
+# Geometry & Boundary Conditions
+
+Two-compartment salt-bridge domain with floating bipolar electrode.
+
+# Waveforms & Parameter Matrix
+
+$$V(t) = V_{DC} + V_{AC}\sin(2\pi ft)$$
+
+Full factorial: 3 frequencies × 3 D levels × 2 geometries × 3 replicates = 54 runs.
+
+# Numerical Methods
+
+Finite-difference on structured 2D grid. SOR for Laplace. Semi-implicit for transport.
+
+# Verification Results
+
+{{< include figures/verification_mesh.png >}}
+
+# Results
+
+## Per-Run Examples
+
+## Campaign Statistics
+
+# Optimization & Pareto Front
+
+# Limitations & Assumptions
+
+- 2D domain approximation
+- Single-step EDOT oxidation
+- No convective transport
+- Simplified nucleation model
+
+# Future Work
+
+- 3D domain extension
+- Multi-step reaction mechanism
+- Experimental validation
+- ML surrogate models

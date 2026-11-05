@@ -1,0 +1,219 @@
+"""
+Numerical verification: mesh and timestep refinement studies.
+
+Demonstrates convergence of AI and UI with grid/timestep refinement.
+Uses Richardson extrapolation for error estimation.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+from .config import SimConfig
+from .runner_single import run_single
+from .utils_io import ensure_dir, load_json, save_csv
+
+logger = logging.getLogger(__name__)
+
+
+def run_mesh_refinement(
+    config: SimConfig,
+    campaign_id: str,
+    output_base: Path,
+    mesh_sizes: list[int] | None = None,
+) -> pd.DataFrame:
+    """Run mesh refinement study.
+
+    Runs same condition with different Nx=Ny and compares AI/UI convergence.
+
+    Parameters
+    ----------
+    config : SimConfig
+        Base configuration.
+    campaign_id : str
+    output_base : Path
+    mesh_sizes : list[int], optional
+        Grid sizes to test. Default: [50, 100, 200].
+
+    Returns
+    -------
+    pd.DataFrame
+        Convergence data.
+    """
+    if mesh_sizes is None:
+        mesh_sizes = [50, 100, 200]
+
+    output_base = Path(output_base)
+    results = []
+
+    for N in mesh_sizes:
+        cfg = config.copy()
+        cfg.numerical.Nx = N
+        cfg.numerical.Ny = N
+        run_id = f"verify_mesh_N{N}"
+
+        logger.info("Mesh refinement: N=%d", N)
+        try:
+            metrics = run_single(cfg, run_id, output_base, campaign_id)
+            results.append({
+                "N": N,
+                "dx": cfg.geometry.compartment_width * 2 / N,
+                "AI": metrics.get("AI", np.nan),
+                "UI": metrics.get("UI", np.nan),
+                "depletion_depth": metrics.get("depletion_depth", np.nan),
+            })
+        except Exception as e:
+            logger.error("Mesh refinement failed for N=%d: %s", N, e)
+            results.append({"N": N, "dx": np.nan, "AI": np.nan, "UI": np.nan})
+
+    df = pd.DataFrame(results)
+
+    # Richardson extrapolation (if 3+ points)
+    if len(df) >= 3 and not df["AI"].isna().any():
+        df["AI_error_estimate"] = _richardson_error(df["AI"].values)
+        df["UI_error_estimate"] = _richardson_error(df["UI"].values)
+
+    # Save
+    verify_dir = ensure_dir(output_base / "verification" / campaign_id)
+    save_csv(df, verify_dir / "mesh_refinement.csv")
+
+    return df
+
+
+def run_timestep_refinement(
+    config: SimConfig,
+    campaign_id: str,
+    output_base: Path,
+    dt_values: list[float] | None = None,
+) -> pd.DataFrame:
+    """Run timestep refinement study.
+
+    Parameters
+    ----------
+    config : SimConfig
+    campaign_id : str
+    output_base : Path
+    dt_values : list[float], optional
+        Timesteps to test. Default: [0.01, 0.005, 0.001].
+
+    Returns
+    -------
+    pd.DataFrame
+    """
+    if dt_values is None:
+        dt_values = [0.01, 0.005, 0.001]
+
+    output_base = Path(output_base)
+    results = []
+
+    for dt_val in dt_values:
+        cfg = config.copy()
+        cfg.numerical.dt = dt_val
+        run_id = f"verify_dt_{dt_val:.0e}".replace("+", "").replace("-", "m")
+
+        logger.info("Timestep refinement: dt=%e", dt_val)
+        try:
+            metrics = run_single(cfg, run_id, output_base, campaign_id)
+            results.append({
+                "dt": dt_val,
+                "AI": metrics.get("AI", np.nan),
+                "UI": metrics.get("UI", np.nan),
+                "depletion_depth": metrics.get("depletion_depth", np.nan),
+            })
+        except Exception as e:
+            logger.error("Timestep refinement failed for dt=%e: %s", dt_val, e)
+            results.append({"dt": dt_val, "AI": np.nan, "UI": np.nan})
+
+    df = pd.DataFrame(results)
+
+    if len(df) >= 3 and not df["AI"].isna().any():
+        df["AI_error_estimate"] = _richardson_error(df["AI"].values)
+        df["UI_error_estimate"] = _richardson_error(df["UI"].values)
+
+    verify_dir = ensure_dir(output_base / "verification" / campaign_id)
+    save_csv(df, verify_dir / "timestep_refinement.csv")
+
+    return df
+
+
+def _richardson_error(values: np.ndarray) -> np.ndarray:
+    """Estimate error via Richardson extrapolation.
+
+    For three refinement levels with ratio r=2:
+        error_i ≈ |f_i - f_{i+1}| / (r^p - 1)
+
+    Assuming second-order convergence (p=2).
+    """
+    errors = np.full(len(values), np.nan)
+    r = 2.0  # refinement ratio
+    p = 2.0  # assumed order
+    for i in range(len(values) - 1):
+        errors[i] = abs(values[i] - values[i + 1]) / (r ** p - 1)
+    return errors
+
+
+def plot_convergence(
+    df: pd.DataFrame,
+    x_col: str,
+    save_path: Path,
+    title: str = "Convergence Study",
+    dpi: int = 300,
+) -> None:
+    """Plot convergence of AI and UI vs refinement parameter."""
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    for idx, dv in enumerate(["AI", "UI"]):
+        ax = axes[idx]
+        if dv in df.columns:
+            ax.plot(df[x_col], df[dv], "o-", linewidth=2, markersize=8)
+            ax.set_xlabel(x_col)
+            ax.set_ylabel(dv)
+            ax.set_title(f"{dv} Convergence")
+            ax.grid(True, alpha=0.3)
+
+            error_col = f"{dv}_error_estimate"
+            if error_col in df.columns:
+                valid = ~df[error_col].isna()
+                if valid.any():
+                    ax.fill_between(
+                        df.loc[valid, x_col],
+                        df.loc[valid, dv] - df.loc[valid, error_col],
+                        df.loc[valid, dv] + df.loc[valid, error_col],
+                        alpha=0.2,
+                    )
+
+    plt.suptitle(title)
+    plt.tight_layout()
+    fig.savefig(Path(save_path), dpi=dpi)
+    plt.close(fig)
+
+
+def run_full_verification(
+    config: SimConfig,
+    campaign_id: str,
+    output_base: Path,
+) -> None:
+    """Run complete verification suite."""
+    output_base = Path(output_base)
+    fig_dir = ensure_dir(output_base / "reports" / campaign_id / "figures")
+
+    # Use short simulation for verification
+    cfg = config.copy()
+    cfg.numerical.t_end = min(cfg.numerical.t_end, 10.0)  # Short run for verification
+
+    logger.info("Running mesh refinement study...")
+    mesh_df = run_mesh_refinement(cfg, campaign_id, output_base)
+    plot_convergence(mesh_df, "N", fig_dir / "verification_mesh.png", "Mesh Refinement")
+
+    logger.info("Running timestep refinement study...")
+    dt_df = run_timestep_refinement(cfg, campaign_id, output_base)
+    plot_convergence(dt_df, "dt", fig_dir / "verification_timestep.png", "Timestep Refinement")
+
+    logger.info("Verification suite complete")
