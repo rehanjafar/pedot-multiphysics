@@ -58,7 +58,7 @@ pedot-sim = "pedot_sim.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-pedot_sim = ["py.typed"]
+pedot_sim = ["templates/*.j2"]
 
 [tool.ruff]
 line-length = 100

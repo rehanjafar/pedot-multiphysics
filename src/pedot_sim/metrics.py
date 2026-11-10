@@ -36,7 +36,7 @@ def anisotropy_index(h: np.ndarray) -> float:
     float
         Anisotropy index (dimensionless).
     """
-    h_pos = h[h > 0]
+    h_pos = h
     if len(h_pos) == 0:
         return 1.0
     h_avg = np.mean(h_pos)

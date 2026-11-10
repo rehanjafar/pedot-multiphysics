@@ -180,7 +180,8 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         run_full_verification(config, args.campaign_id, output_base)
         print("Numerical verification complete.\n")
     except Exception as e:
-        print(f"Warning: Numerical verification failed: {e}\n")
+        print(f"Numerical verification failed: {e}\n")
+        return 1
 
     df = aggregate_results(args.campaign_id, output_base)
 
@@ -257,7 +258,8 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         run_full_analysis(args.campaign_id, output_base)
         print("Statistical analysis complete.")
     except Exception as e:
-        print(f"Warning: Statistical analysis failed: {e}")
+        print(f"Statistical analysis failed: {e}")
+        return 1
 
     # Run optimization analysis
     try:
@@ -266,7 +268,8 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         run_optimization_analysis(args.campaign_id, output_base)
         print("Optimization analysis complete.")
     except Exception as e:
-        print(f"Warning: Optimization analysis failed: {e}")
+        print(f"Optimization analysis failed: {e}")
+        return 1
 
     results_path = output_base / "simulated_agg" / args.campaign_id / "results.csv"
     print(f"\nResults saved to: {results_path}")
@@ -309,7 +312,7 @@ def _cmd_make_report(args: argparse.Namespace) -> int:
         print("ERROR: jinja2 is required for report generation.", file=sys.stderr)
         return 1
 
-    template = jinja2.Template(_MINIMAL_REPORT_TEMPLATE)
+    template = jinja2.Environment(autoescape=True).from_string(_MINIMAL_REPORT_TEMPLATE)
 
     summary_html = df.describe().to_html() if len(df) > 0 else "<p>No data</p>"
 
@@ -491,8 +494,17 @@ _COMMAND_DISPATCH = {
 def main(argv: Optional[Sequence[str]] = None) -> None:
     """CLI entry point.  Installed as ``pedot-sim`` console script."""
     parser = _build_parser()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    verbosity = [a for a in argv if a in ("-v", "-vv", "--verbose")]
+    argv = verbosity + [a for a in argv if a not in ("-v", "-vv", "--verbose")]
     args = parser.parse_args(argv)
 
+    if hasattr(args, "campaign_id"):
+        from .utils_io import validate_id
+        try:
+            validate_id(args.campaign_id)
+        except ValueError as exc:
+            parser.error(str(exc))
     _setup_logging(args.verbose)
 
     if args.command is None:

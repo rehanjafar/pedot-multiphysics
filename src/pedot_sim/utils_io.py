@@ -71,12 +71,12 @@ def save_csv(df: pd.DataFrame, path: Path) -> None:
 
 def get_run_dir(base: Path, campaign_id: str, run_id: str) -> Path:
     """Get the output directory for a specific run."""
-    return ensure_dir(Path(base) / "data" / "simulated_raw" / campaign_id / run_id)
+    return ensure_dir(Path(base) / "simulated_raw" / campaign_id / run_id)
 
 
 def get_campaign_dir(base: Path, campaign_id: str) -> Path:
     """Get the aggregated output directory for a campaign."""
-    return ensure_dir(Path(base) / "data" / "simulated_agg" / campaign_id)
+    return ensure_dir(Path(base) / "simulated_agg" / campaign_id)
 
 
 def get_report_dir(base: Path, campaign_id: str) -> Path:
@@ -141,3 +141,10 @@ class RunManifest:
 
     def is_completed(self, run_id: str) -> bool:
         return run_id in self.completed
+
+
+def validate_id(value: str) -> str:
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value) or ".." in value:
+        raise ValueError("IDs must be safe names containing letters, digits, _, - or .")
+    return value

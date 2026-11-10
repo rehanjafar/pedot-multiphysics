@@ -73,6 +73,13 @@ def compute_objective_scores(
         With added 'score' column.
     """
     df = df.copy()
+    required = [c for c in ("AI", "UI", "mean_growth_rate") if c in df]
+    if required and not np.isfinite(df[required].values).all():
+        raise ValueError("Optimization requires finite metrics")
+    if "mean_h" in df:
+        df = df[df.mean_h > 0].copy()
+    if df.empty:
+        raise ValueError("Optimization requires a deposited film")
 
     # Normalize UI (lower is better -> invert)
     if "UI" in df.columns and df["UI"].max() > 0:

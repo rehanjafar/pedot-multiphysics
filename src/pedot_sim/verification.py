@@ -57,6 +57,7 @@ def run_mesh_refinement(
         cfg = config.copy()
         cfg.numerical.Nx = N
         cfg.numerical.Ny = N
+        cfg.nucleation.enable_noise = False
         run_id = f"verify_mesh_N{N}"
 
         logger.info("Mesh refinement: N=%d", N)
@@ -64,10 +65,12 @@ def run_mesh_refinement(
             metrics = run_single(cfg, run_id, output_base, campaign_id)
             results.append({
                 "N": N,
-                "dx": cfg.geometry.compartment_width * 2 / N,
+                "dx": (2*cfg.geometry.compartment_width + cfg.geometry.bridge_length) / (N-1),
                 "AI": metrics.get("AI", np.nan),
                 "UI": metrics.get("UI", np.nan),
                 "depletion_depth": metrics.get("depletion_depth", np.nan),
+                "mean_h": metrics.get("mean_h", np.nan),
+                "effective_dt": metrics.get("effective_dt", np.nan),
             })
         except Exception as e:
             logger.error("Mesh refinement failed for N=%d: %s", N, e)
@@ -77,8 +80,8 @@ def run_mesh_refinement(
 
     # Richardson extrapolation (if 3+ points)
     if len(df) >= 3 and not df["AI"].isna().any():
-        df["AI_error_estimate"] = _richardson_error(df["AI"].values)
-        df["UI_error_estimate"] = _richardson_error(df["UI"].values)
+        df["AI_error_estimate"] = _richardson_error(df["AI"].values, df["dx" if "dx" in df else "effective_dt"].values)
+        df["UI_error_estimate"] = _richardson_error(df["UI"].values, df["dx" if "dx" in df else "effective_dt"].values)
 
     # Save
     verify_dir = ensure_dir(output_base / "verification" / campaign_id)
@@ -116,6 +119,7 @@ def run_timestep_refinement(
     for dt_val in dt_values:
         cfg = config.copy()
         cfg.numerical.dt = dt_val
+        cfg.nucleation.enable_noise = False
         run_id = f"verify_dt_{dt_val:.0e}".replace("+", "").replace("-", "m")
 
         logger.info("Timestep refinement: dt=%e", dt_val)
@@ -126,6 +130,8 @@ def run_timestep_refinement(
                 "AI": metrics.get("AI", np.nan),
                 "UI": metrics.get("UI", np.nan),
                 "depletion_depth": metrics.get("depletion_depth", np.nan),
+                "mean_h": metrics.get("mean_h", np.nan),
+                "effective_dt": metrics.get("effective_dt", np.nan),
             })
         except Exception as e:
             logger.error("Timestep refinement failed for dt=%e: %s", dt_val, e)
@@ -134,8 +140,8 @@ def run_timestep_refinement(
     df = pd.DataFrame(results)
 
     if len(df) >= 3 and not df["AI"].isna().any():
-        df["AI_error_estimate"] = _richardson_error(df["AI"].values)
-        df["UI_error_estimate"] = _richardson_error(df["UI"].values)
+        df["AI_error_estimate"] = _richardson_error(df["AI"].values, df["dx" if "dx" in df else "effective_dt"].values)
+        df["UI_error_estimate"] = _richardson_error(df["UI"].values, df["dx" if "dx" in df else "effective_dt"].values)
 
     verify_dir = ensure_dir(output_base / "verification" / campaign_id)
     save_csv(df, verify_dir / "timestep_refinement.csv")
@@ -143,19 +149,29 @@ def run_timestep_refinement(
     return df
 
 
-def _richardson_error(values: np.ndarray) -> np.ndarray:
-    """Estimate error via Richardson extrapolation.
+def _richardson_error(values, spacings):
+    """Fine-level estimate using observed order; NaN when not identifiable.
 
-    For three refinement levels with ratio r=2:
-        error_i ≈ |f_i - f_{i+1}| / (r^p - 1)
-
-    Assuming second-order convergence (p=2).
+    Three monotone values and strictly decreasing actual spacings are required.
+    No assumed convergence order or fixed refinement ratio is used.
     """
+    from scipy.optimize import brentq
     errors = np.full(len(values), np.nan)
-    r = 2.0  # refinement ratio
-    p = 2.0  # assumed order
-    for i in range(len(values) - 1):
-        errors[i] = abs(values[i] - values[i + 1]) / (r ** p - 1)
+    if len(values) != 3 or not np.isfinite(values).all():
+        return errors
+    h = np.asarray(spacings) / max(spacings)
+    if not (h[0] > h[1] > h[2] > 0):
+        return errors
+    d0, d1 = values[0]-values[1], values[1]-values[2]
+    if d0*d1 <= 0:
+        return errors
+    def residual(order):
+        return (h[0]**order-h[1]**order)/(h[1]**order-h[2]**order) - d0/d1
+    try:
+        order = brentq(residual, .05, 10.)
+        errors[-1] = abs(d1) / ((h[1]/h[2])**order-1)
+    except ValueError:
+        pass
     return errors
 
 
@@ -206,6 +222,7 @@ def run_full_verification(
 
     # Use short simulation for verification
     cfg = config.copy()
+    cfg.nucleation.enable_noise = False
     cfg.numerical.t_end = min(cfg.numerical.t_end, 10.0)  # Short run for verification
 
     logger.info("Running mesh refinement study...")
@@ -216,4 +233,14 @@ def run_full_verification(
     dt_df = run_timestep_refinement(cfg, campaign_id, output_base)
     plot_convergence(dt_df, "dt", fig_dir / "verification_timestep.png", "Timestep Refinement")
 
-    logger.info("Verification suite complete")
+    # Passing means these output tolerances were met, not experimental validation.
+    for name, frame in (("mesh", mesh_df), ("timestep", dt_df)):
+        if not np.isfinite(frame[["AI", "UI", "mean_h"]].values).all():
+            raise ValueError(f"{name} refinement contains failed/nonfinite runs")
+        if name == "timestep" and frame.effective_dt.nunique() < 3:
+            raise ValueError("Waveform timestep cap collapsed refinement levels; use smaller dt values")
+        for metric, floor in (("AI", 1e-8), ("UI", 1e-12), ("mean_h", 1e-12)):
+            coarse, fine = frame[metric].values[-2:]
+            if abs(coarse-fine) > max(floor, .05*abs(fine)):
+                raise ValueError(f"{name} refinement did not meet 5% tolerance for {metric}")
+    logger.info("Deterministic refinement tolerances passed (not experimental validation)")

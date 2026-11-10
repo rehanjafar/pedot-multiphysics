@@ -1,181 +1,59 @@
 # pedot-multiphysics
 
-Staged multiphysics simulation of waveform-controlled PEDOT electropolymerization in a two-compartment salt-bridge bipolar electrochemical system.
+Research prototype for fixed-domain, waveform-driven PEDOT deposition surrogates.
+**Uncalibrated: do not interpret results as experimentally validated morphology or cell current.**
+The numerical and campaign fixes change results substantially; use new campaign IDs and regenerate older results.
 
-## Overview
+## Install and run
 
-This package models how waveform parameters (frequency, amplitude, DC offset), electrolyte properties (diffusion coefficient / viscosity), and cell geometry (bridge width) influence PEDOT film morphology on a floating bipolar electrode (BPE). The simulation couples four physics stages of increasing complexity:
+Python 3.9+; install from this directory:
 
-| Stage | Physics | PDE |
-|-------|---------|-----|
-| **A** | Diffusion-reaction | dC/dt = D nabla^2 C - R |
-| **B** | + Laplace electric field | nabla^2 V = 0, field-enhanced R |
-| **C** | + Nernst-Planck migration | ion flux includes zFDC/RT nabla V |
-| **D** | + Butler-Volmer kinetics | j = j0 (C/Cref)[exp(alpha nF eta/RT) - exp(-(1-alpha)nF eta/RT)] |
-
-**Key dependent variables:**
-- **Anisotropy Index (AI)** = h_max / h_mean (1.0 = perfectly uniform)
-- **Uniformity Index (UI)** = std(h) (0.0 = perfectly uniform)
-
-**Central hypothesis:** Uniformity (low AI) is achieved when tau_diff << tau_rxn (high frequency, low viscosity). Anisotropy (high AI) emerges when tau_diff > tau_rxn.
-
-## Installation
-
-```bash
-# Clone and install in editable mode
-cd pedot-multiphysics
-pip install -e .
-
-# With optional 3D visualization
-pip install -e ".[viz3d]"
+```sh
+pip install -e '.[dev]'
+pytest tests/
+pedot-sim run-single --config configs/example_verify.json --run-id smoke_001 --campaign-id quick_test -v
+pedot-sim run-batch --config configs/example_factorial.json --campaign-id factorial_v2 --max-workers 4 --sweep factorial -v
+pedot-sim run-batch --config configs/example_dense.json --campaign-id dense_v2 --sweep dense --max-workers 4
+pedot-sim verify --config configs/example_verify.json --campaign-id verify_v2
+pedot-sim analyze --campaign-id factorial_v2 --output-base data
+pedot-sim make-report --campaign-id factorial_v2 --output-base data
 ```
 
-**Requirements:** Python 3.9+, NumPy, SciPy, Matplotlib, Pandas, statsmodels, Jinja2.
+`verify` runs deterministic mesh/time studies and exits unsuccessfully when the finest two levels differ by more than 5% (with small absolute floors), fail, or do not represent distinct timesteps. Passing these output tolerances is **not** experimental validation or a universal error bound. Richardson estimates use observed order and actual spacings, and are absent when not identifiable. Only the supplied physics stage is verified; test each stage and waveform independently. Repeated runs need new IDs: existing output is never silently overwritten.
 
-## Quick Start
+A deterministic factorial has no independent replicate noise: ANOVA significance is not meaningful in that case. Continuous dense sweeps are not a factorial ANOVA design. Analysis rejects insufficient/rank-deficient inferential designs; descriptive simulation comparisons still require physical validation. Composite/Pareto scores describe the selected objectives and their weights, not proven experimental optimality.
 
-### Single run
-```bash
-pedot-sim run-single \
-  --config configs/example_verify.json \
-  --run-id smoke_001 \
-  --campaign-id quick_test \
-  -v
-```
+## Model and units
 
-### Full factorial campaign (54 runs)
-```bash
-pedot-sim run-batch \
-  --config configs/example_factorial.json \
-  --campaign-id factorial_v1 \
-  --max-workers 4 \
-  --sweep factorial \
-  -v
-```
+- Stage A imposes a first-order surface-reaction surrogate, J=k C, independent of voltage.
+- Stage B adds a prescribed Laplace field and phenomenological field enhancement J=k C (1+beta |E|). It remains a surrogate, including at zero voltage.
+- Stage C additionally transports a species with the configured charge number. The default is neutral EDOT (z=0); changing it requires justification of the chemical species and reactions.
+- Stage D uses phenomenological Butler–Volmer kinetics. A scalar metal potential balances the **signed proxy current** with eta=metal−solution and zero equilibrium reference. Only anodic current consumes monomer/deposits polymer. The cathodic branch is a mathematical balancing proxy, **not a calibrated counter-reaction**. The prescribed electrolyte field does not respond to interfacial current. This weak-coupling approximation cannot establish self-consistent BPE polarization or measured cell current.
 
-### Dense parameter sweep (500+ runs)
-```bash
-pedot-sim run-batch \
-  --config configs/example_dense.json \
-  --campaign-id dense_v1 \
-  --sweep dense \
-  --max-workers 8 \
-  -v
-```
+Diffusion uses a sparse masked theta scheme: theta=0 explicit, 0.5 Crank–Nicolson, 1 backward Euler. Inactive faces are insulated; feeder cells are fixed-concentration reservoirs. Reaction is split with local backward Euler, so the coupled method is first order in time. Migration uses conservative upwind face fluxes with positivity substeps. Unstable explicit steps, nonpositive diffusion solutions and unconverged Laplace fields fail instead of being silently clipped/accepted. Reduce dt or use theta=1 if Crank–Nicolson develops oscillations.
 
-### Numerical verification
-```bash
-pedot-sim verify \
-  --config configs/example_verify.json \
-  --campaign-id verify_v1 \
-  -v
-```
+Each electrode row cell represents **one effective exposed interface per unit out-of-plane depth**, with surface/volume ratio 1/dy. Film mass is derived from the actual consumed monomer, using the approximate EDOT molar mass and PEDOT density. This is not a resolved two-sided solid electrode. Film thickness does not alter geometry, electrical fields or transport.
 
-### Statistical analysis
-```bash
-pedot-sim analyze --campaign-id factorial_v1 --output-base data
-```
+For field-dependent stages the runner automatically caps dt at 1/(40 f), and more tightly for short pulse duty intervals; dt in the config is an upper limit. The final partial step ends at t_end; snapshots include the initial state. Inspect effective_dt in outputs and establish waveform convergence at finer timesteps. These caps are not a proof of accuracy. Legacy adaptive_dt/cfl_safety fields are retained for input compatibility, not a separate adaptive error controller.
 
-### Report generation
-```bash
-pedot-sim make-report --campaign-id factorial_v1 --output-base data
-```
+Default stochastic noise is disabled. When enabled, spatial Poisson events modulate requested reaction flux; film still consumes monomer. The old additive thickness-noise API is rejected. This is an uncalibrated heterogeneity model, not resolved nucleation/coalescence. noise_amplitude is a legacy configuration field and no longer creates initial polymer mass. Seed reproducibility does not replace stochastic ensemble convergence.
 
-## Project Structure
+All physical values are SI. Surface flux is mol/(m² s); integrated flux is mol/(m s), per unit out-of-plane depth. It is not amperes. AI=max(h)/mean(h) includes bare electrode positions; UI=std(h) is in meters. Zero-growth states must not be interpreted as a useful uniform coating. timescale_ratio=L_electrode k/D; diffusion_pulse_ratio=(bridge_width/2)² f/D is a separate quantity. Neither proves a frequency/uniformity hypothesis.
 
-```
-pedot-multiphysics/
-├── src/pedot_sim/
-│   ├── __init__.py          # Package init
-│   ├── config.py            # Dataclass-based configuration (SimConfig)
-│   ├── constants.py         # Physical constants (F, R, D_LEVELS, etc.)
-│   ├── geometry.py          # Two-compartment salt-bridge domain builder
-│   ├── waveforms.py         # V(t) = V_DC + V_AC*sin(2*pi*f*t) + pulsed, ADC
-│   ├── field.py             # Laplace solver (SOR) + electric field computation
-│   ├── transport.py         # Diffusion (semi-implicit) + Nernst-Planck migration
-│   ├── kinetics.py          # Butler-Volmer electrode kinetics
-│   ├── nucleation.py        # Stochastic nucleation model (seeded RNG)
-│   ├── growth.py            # Master timestep orchestrator (evolve_one_timestep)
-│   ├── metrics.py           # AI, UI, depletion depth, timescale ratio, roughness
-│   ├── runner_single.py     # Single-run executor with output serialization
-│   ├── runner_batch.py      # Parallel batch campaigns (factorial + dense sweeps)
-│   ├── viz2d.py             # 2D visualization (heatmaps, cross-sections, timeseries)
-│   ├── viz3d.py             # 3D PyVista surface plots and animations
-│   ├── analysis_stats.py    # 3-way ANOVA, polynomial regression, campaign plots
-│   ├── analysis_opt.py      # Pareto front optimization
-│   ├── verification.py      # Mesh + timestep refinement (Richardson extrapolation)
-│   ├── validation.py        # Experimental data comparison scaffold
-│   ├── reporting.py         # Jinja2 HTML + PDF report generator
-│   ├── cli.py               # CLI entry point (pedot-sim)
-│   ├── utils_io.py          # I/O utilities, RunManifest
-│   ├── utils_grid.py        # Grid2D dataclass
-│   └── logging_setup.py     # Logging configuration
-├── configs/
-│   ├── example_factorial.json   # 3x3x2x3 = 54 runs
-│   ├── example_dense.json       # 500-point LHS sweep
-│   └── example_verify.json      # Quick verification config
-├── tests/
-│   ├── test_metrics.py      # Unit tests for metrics
-│   ├── test_waveforms.py    # Unit tests for waveforms
-│   └── test_smoke_run.py    # End-to-end smoke tests (all 4 stages)
-├── reports/templates/        # Jinja2 HTML + Quarto templates
-├── data/experimental/        # Placeholder for experimental CV/CA data
-├── pyproject.toml
-├── requirements.txt
-└── README.md
-```
+## Parameters and validation limits
 
-## Output Directory Layout
+Material constants and kinetic defaults are exploratory values, not traceably fitted PEDOT parameters. k, j0, beta, density, species identity, equilibrium potentials, deposition efficiency and counter-reaction chemistry require measurement and parameter provenance before quantitative use. D and viscosity are independent inputs; the Stokes–Einstein helper provides an explicitly idealized spherical-solute estimate, not an empirical calibration. Configured conductivity/ionic_strength do not change the prescribed-voltage, uniform-conductivity Laplace solution. No convection, multistep oligomer chemistry, double-layer charging, nodule geometry or field feedback from growing film is modeled.
 
-After running a campaign, the output structure is:
+No experimental data are bundled. The validation Python interface requires dimensioned simulation columns t [s] and I [A] (or V and I for separately aligned monotonic CV branches). Native output supplies time and molar flux: it intentionally cannot be compared directly to amperes. Supply an independently justified current/geometry conversion or a calibrated observable first. Failed validation returns an explicit failed status; interpolation outside the simulated range or across nonmonotonic CV branches is rejected.
 
-```
-data/
-├── simulated_raw/<campaign_id>/
-│   └── <run_id>/
-│       ├── params.json       # Full configuration snapshot
-│       ├── metadata.json     # Runtime metadata + status
-│       ├── metrics.json      # Final AI, UI, growth rate, etc.
-│       ├── fields.npz        # Concentration snapshots
-│       ├── thickness.npz     # Film thickness snapshots
-│       ├── timeseries.csv    # Per-timestep diagnostics
-│       ├── figures/          # Per-run plots
-│       └── logs/run.log      # Detailed run log
-├── simulated_agg/<campaign_id>/
-│   ├── results.csv           # Aggregated metrics (one row per run)
-│   ├── descriptive_stats.csv
-│   ├── AI_anova_table.csv
-│   ├── UI_anova_table.csv
-│   ├── pareto_front.csv
-│   └── best_conditions.csv
-└── reports/<campaign_id>/
-    ├── final_report.html
-    ├── final_report.pdf      # (if weasyprint/wkhtmltopdf available)
-    └── figures/              # Campaign-level plots
-```
+## Campaigns, output and safety
 
-## Factorial Design
+The factorial honors configured frequencies, D_levels, geometries and replicates. The default design is 3×3×2×3=54 runs. Dense sampling honors sample count and strategy, samples frequency/D/width, and independently samples configured DC/amplitude ranges. Numeric bridge_width is authoritative; geometry_type is a label and never overrides it. Explicitly specify the width for a single custom geometry.
 
-The default factorial design crosses:
+Outputs are under data/simulated_raw/<campaign>/<run>, data/simulated_agg/<campaign>, data/verification/<campaign> and data/reports/<campaign>. Campaign manifests and source/configuration fingerprints prevent changed campaigns from silently resuming old results. Use a new campaign ID after changes. Completed entries require saved metrics and completed metadata; failures produce a nonzero batch exit. Failed partial runs require a new campaign ID rather than destructive automatic retries. IDs are restricted to safe names; existing runs are refused.
 
-| Factor | Levels | Values |
-|--------|--------|--------|
-| Frequency | 3 | 1, 10, 100 Hz |
-| Diffusion coefficient (D) | 3 | 1e-10 (low), 6.5e-10 (mid), 2e-9 (high) m^2/s |
-| Geometry (bridge width) | 2 | narrow (2 mm), wide (5 mm) |
-| Replicates | 3 | Seeds 42, 43, 44 |
-
-**Total: 3 x 3 x 2 x 3 = 54 runs**
-
-D levels correspond to electrolyte viscosity via the Stokes-Einstein relation: D = kT / (6 pi mu r).
-
-## Running Tests
-
-```bash
-pip install -e ".[dev]"
-pytest tests/ -v
-```
+save_fields controls concentration archives. Thickness/timeseries/metrics remain available. Animations require snapshots and optional visualization/I/O dependencies (`pip install -e '.[viz3d,io]'`). The 3D view merely extrudes the 1D profile and is not a 3D physical simulation. Reports include actual configurations, escaped labels and packaged templates; PDF rendering is optional and not part of the scientific verification tests. Dependency ranges are supported ranges, not a lockfile or vulnerability audit.
 
 ## License
 
-Research software. Please cite if used in publications.
+MIT; see LICENSE. Scientific use should identify the software revision, full configuration, environment, model limitations and independent validation evidence.

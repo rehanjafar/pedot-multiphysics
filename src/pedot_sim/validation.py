@@ -92,6 +92,10 @@ def align_and_compare(
         Keys: RMSE, R_squared, max_error, mean_error.
     """
     # Interpolate simulation to experimental x values
+    if not np.all(np.diff(sim_data[x_col].values) > 0):
+        raise ValueError("Simulation x values must be strictly increasing; split CV branches first")
+    if exp_data[x_col].min() < sim_data[x_col].min() or exp_data[x_col].max() > sim_data[x_col].max():
+        raise ValueError("Experimental points exceed simulated range")
     sim_interp = np.interp(exp_data[x_col].values, sim_data[x_col].values, sim_data[y_col].values)
     exp_vals = exp_data[y_col].values
 
@@ -181,6 +185,9 @@ def run_validation(
             exp_df = load_experimental_ca(exp_data_path)
             x_col, y_col = "t", "I"
 
+        sim_df = sim_df.rename(columns={"time": "t"})
+        if "I" not in sim_df:
+            raise ValueError("A dimensioned I [A] column is required; molar flux proxies cannot be compared to amperes")
         # Map simulation columns
         if y_col == "I" and "total_flux" in sim_df.columns:
             sim_df["I"] = sim_df["total_flux"]  # Proxy
@@ -196,6 +203,7 @@ def run_validation(
         report.plots.append(plot_path)
 
     except Exception as e:
+        report.metrics = {"status": "failed", "error": str(e)}
         report.notes.append(f"Validation failed: {e}")
         logger.error("Validation failed: %s", e)
 

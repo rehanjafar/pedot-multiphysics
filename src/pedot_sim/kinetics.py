@@ -5,10 +5,10 @@ Butler-Volmer equation at the bipolar electrode:
     j = j0 * (C/C_ref) * [exp(alpha*n*F*eta/(R*T)) - exp(-(1-alpha)*n*F*eta/(R*T))]
 
 Conversion to monomer consumption rate:
-    R_boundary = |j| / (n * F)  [mol/(m^2*s)]
+    R_boundary = max(j, 0) / (n * F)  [mol/(m^2*s)]
 
 Conversion to film growth rate:
-    dh/dt = |j| * M / (n * F * rho)  [m/s]
+    dh/dt = max(j, 0) * M / (n * F * rho)  [m/s]
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ def flux_to_consumption_rate(
 ) -> np.ndarray | float:
     """Convert current density to monomer consumption rate.
 
-    R = |j| / (n * F)  [mol/(m^2*s)]
+    R = max(j, 0) / (n * F)  [mol/(m^2*s)]
 
     Parameters
     ----------
@@ -80,7 +80,7 @@ def flux_to_consumption_rate(
     R : array_like
         Consumption rate [mol/(m^2*s)].
     """
-    return np.abs(j) / (n_electrons * C.F)
+    return np.maximum(j, 0.) / (n_electrons * C.F)
 
 
 def flux_to_growth_rate(
@@ -91,7 +91,7 @@ def flux_to_growth_rate(
 ) -> np.ndarray | float:
     """Convert current density to film growth rate.
 
-    dh/dt = |j| * M / (n * F * rho)  [m/s]
+    dh/dt = max(j, 0) * M / (n * F * rho)  [m/s]
 
     Parameters
     ----------
@@ -109,7 +109,7 @@ def flux_to_growth_rate(
     dhdt : array_like
         Growth rate [m/s].
     """
-    return np.abs(j) * M_monomer / (n_electrons * C.F * rho_film)
+    return np.maximum(j, 0.) * M_monomer / (n_electrons * C.F * rho_film)
 
 
 def effective_overpotential(

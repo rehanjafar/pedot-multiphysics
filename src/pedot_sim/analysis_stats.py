@@ -78,6 +78,10 @@ def run_anova(df: pd.DataFrame) -> dict:
         logger.warning("statsmodels not available, skipping ANOVA")
         return {}
 
+    if any(df[c].nunique() < 2 for c in ("frequency", "D_level", "geometry")):
+        raise ValueError("Factorial ANOVA requires multiple levels for all three factors")
+    if len(df) <= df.groupby(["frequency", "D_level", "geometry"]).ngroups:
+        raise ValueError("ANOVA requires replicated conditions, not a continuous dense sweep")
     results = {}
 
     # Ensure categorical
@@ -100,7 +104,7 @@ def run_anova(df: pd.DataFrame) -> dict:
             results[f"{dv}_model"] = model
             logger.info("ANOVA for %s: R² = %.4f", dv, model.rsquared)
         except Exception as e:
-            logger.error("ANOVA failed for %s: %s", dv, e)
+            raise ValueError(f"ANOVA failed for {dv}") from e
 
     return results
 
@@ -138,6 +142,8 @@ def run_regression(df: pd.DataFrame) -> dict:
 
     features = ["log_freq", "log_D", "geom_num", "log_freq_sq", "log_D_sq", "freq_D_interaction"]
     X = sm.add_constant(df[features].values)
+    if len(df) <= X.shape[1] or np.linalg.matrix_rank(X) != X.shape[1]:
+        raise ValueError("Regression requires a full rank design and residual degrees of freedom")
     feature_names = ["const"] + features
 
     for dv in ["AI", "UI"]:

@@ -8,6 +8,8 @@ resumability via RunManifest, and result aggregation into a single CSV.
 from __future__ import annotations
 
 import json
+import hashlib
+import subprocess
 import logging
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -102,7 +104,7 @@ def generate_factorial_runs(
     d_levels: Optional[Dict[str, float]] = None,
     geometries: Optional[Dict[str, float]] = None,
     n_replicates: Optional[int] = None,
-    base_seed: int = 42,
+    base_seed: Optional[int] = None,
 ) -> List[Tuple[str, SimConfig]]:
     """Generate a full-factorial parameter sweep.
 
@@ -128,12 +130,14 @@ def generate_factorial_runs(
     if frequencies is None:
         frequencies = list(config.batch.frequencies) if config.batch.frequencies else list(_FREQUENCIES)
     if d_levels is None:
-        d_levels = dict(_D_LEVELS)
+        d_levels = {k: _D_LEVELS[k] for k in config.batch.D_levels}
     if geometries is None:
-        geometries = dict(_GEOMETRIES)
+        geometries = {k: _GEOMETRIES[k] for k in config.batch.geometries}
     if n_replicates is None:
         n_replicates = config.batch.n_replicates
 
+    if base_seed is None:
+        base_seed = config.nucleation.seed
     runs: List[Tuple[str, SimConfig]] = []
 
     for freq, (d_label, d_val), (g_label, bw), rep in product(
@@ -142,7 +146,7 @@ def generate_factorial_runs(
         geometries.items(),
         range(n_replicates),
     ):
-        run_id = f"f{int(freq)}_D{d_label}_g{g_label}_r{rep}"
+        run_id = f"f{freq:.17g}_D{d_label}_g{g_label}_r{rep}"
         run_cfg = _override_config(
             config,
             frequency=freq,
@@ -230,6 +234,8 @@ def generate_dense_runs(
             geometry_type=g_type,
             seed=seed + i,
         )
+        run_cfg.waveform.V_DC = float(rng.uniform(*bc.V_DC_range))
+        run_cfg.waveform.V_AC = float(rng.uniform(*bc.V_AC_range))
         runs.append((run_id, run_cfg))
 
     logger.info("Generated %d dense runs (sampling=%s)", len(runs), sampling)
@@ -343,8 +349,8 @@ def run_batch(
     output_base: Optional[Path] = None,
     max_workers: int = 4,
     sweep: str = "factorial",
-    n_dense: int = 500,
-    dense_sampling: str = "latin_hypercube",
+    n_dense: Optional[int] = None,
+    dense_sampling: Optional[str] = None,
 ) -> pd.DataFrame:
     """Execute a batch campaign of simulation runs in parallel.
 
@@ -370,6 +376,15 @@ def run_batch(
     pd.DataFrame
         Aggregated results for all completed runs.
     """
+    from .config import validate_config
+    from .utils_io import validate_id
+    validate_config(config); validate_id(campaign_id)
+    if max_workers < 1:
+        raise ValueError("max_workers must be positive")
+    n_dense = config.batch.n_dense_samples if n_dense is None else n_dense
+    dense_sampling = dense_sampling or {"lhs": "latin_hypercube", "dense": "latin_hypercube"}.get(config.batch.sweep_type, config.batch.sweep_type)
+    if n_dense < 1:
+        raise ValueError("n_dense must be positive")
     if output_base is None:
         output_base = Path("data")
     output_base = Path(output_base)
@@ -384,9 +399,27 @@ def run_batch(
     else:
         raise ValueError(f"Unknown sweep type: {sweep!r}")
 
+    if len({rid for rid, _ in runs}) != len(runs):
+        raise ValueError("Duplicate run IDs")
     # ---- Check manifest for resumability ---------------------------------
     campaign_dir = get_campaign_dir(output_base, campaign_id)
+    # Source identity includes local edits, not only HEAD.
+    digest = hashlib.sha256()
+    for source in sorted(Path(__file__).parent.glob("*.py")):
+        digest.update(source.name.encode()); digest.update(source.read_bytes())
+    provenance = {"config": asdict(config), "source_sha256": digest.hexdigest(),
+                  "sweep": sweep, "n_dense": n_dense, "sampling": dense_sampling}
+    provenance_path = campaign_dir / "provenance.json"
+    if provenance_path.exists() and load_json(provenance_path) != provenance:
+        raise ValueError("Campaign configuration/source changed; choose a new campaign ID")
+    save_json(provenance, provenance_path)
     manifest = RunManifest(campaign_dir)
+    for rid in manifest.completed:
+        directory = output_base / "simulated_raw" / campaign_id / rid
+        if not (directory / "metrics.json").exists() or not (directory / "metadata.json").exists():
+            raise ValueError(f"Completed run has missing outputs: {rid}")
+        if load_json(directory / "metadata.json").get("status") != "completed":
+            raise ValueError(f"Completed run has invalid status: {rid}")
 
     pending = [(rid, cfg) for rid, cfg in runs if not manifest.is_completed(rid)]
     n_skipped = len(runs) - len(pending)
@@ -471,7 +504,10 @@ def run_batch(
         logger.info("Failed runs saved to %s", failed_path)
 
     # ---- Aggregate all results -------------------------------------------
-    return aggregate_results(campaign_id, output_base)
+    df = aggregate_results(campaign_id, output_base)
+    if failed_runs:
+        raise RuntimeError(f"{len(failed_runs)} runs failed; inspect failed_runs.csv")
+    return df
 
 
 # ---------------------------------------------------------------------------

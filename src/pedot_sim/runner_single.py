@@ -173,7 +173,7 @@ def _plot_thickness_evolution(
     if len(snapshots) <= 10:
         ax.legend(fontsize=7)
     fig.tight_layout()
-    fig.savefig(out_dir / "thickness_evolution.png", dpi=config.output.dpi)
+    fig.savefig(out_dir / f"thickness_evolution.{config.output.figure_format}", dpi=config.output.dpi)
     plt.close(fig)
 
 
@@ -277,8 +277,15 @@ def run_single(
         Metrics dictionary summarising the run outcome.  On failure the
         dict will contain ``"status": "failed"`` and an ``"error"`` key.
     """
+    from .config import validate_config
+    from .utils_io import validate_id
+    validate_config(config)
+    validate_id(campaign_id); validate_id(run_id)
+    output_base = Path(output_base)
     # ---- Output directory tree -------------------------------------------
     run_dir = ensure_dir(output_base / "simulated_raw" / campaign_id / run_id)
+    if (run_dir / "params.json").exists():
+        raise FileExistsError(f"Run already exists: {run_dir}; choose a new campaign/run ID")
     for sub in ("figures", "animations", "logs"):
         ensure_dir(run_dir / sub)
 
@@ -320,17 +327,24 @@ def run_single(
         )
 
         # ---- Initialise fields -------------------------------------------
-        C = np.full((grid.Ny, grid.Nx), config.physics.C_bulk)
+        C = np.where(domain.domain_mask, config.physics.C_bulk, 0.)
 
         # Electrode cells for h
         e_rows, e_cols = np.where(domain.electrode_mask)
         n_electrode = len(e_cols)
+
+        if n_electrode < 2:
+            raise ValueError("Resolve the electrode with at least two cells")
 
         # Nucleation model handles initial perturbation and ongoing noise
         nuc_model = NucleationModel(config.nucleation, n_electrode)
         h = nuc_model.generate_initial_nuclei()
 
         dt = config.numerical.dt
+        if config.physics.physics_stage.upper() != "A":
+            dt = min(dt, 1. / (40 * config.waveform.frequency))
+            if config.waveform.waveform_type == "pulsed":
+                dt = min(dt, min(config.waveform.duty_cycle, 1-config.waveform.duty_cycle) / (10*config.waveform.frequency))
         t_end = config.numerical.t_end
         n_steps = int(np.ceil(t_end / dt))
 
@@ -352,19 +366,21 @@ def run_single(
 
         # ---- Time-stepping loop ------------------------------------------
         timeseries: List[TimeseriesRecord] = []
-        snapshots: List[Dict[str, Any]] = []
+        snapshots: List[Dict[str, Any]] = [{"time": 0., "C": C.copy(), "h": h.copy()}] if n_snapshots else []
+        initial_h = h.copy()
         flux_history: List[float] = []
         V_prev: Optional[np.ndarray] = None
 
         for step in range(n_steps):
             t = step * dt
+            step_dt = min(dt, t_end-t)
 
             # Use the master physics orchestrator from growth.py
             step_result: StepResult = evolve_one_timestep(
                 C=C,
                 h=h,
                 t=t,
-                dt=dt,
+                dt=step_dt,
                 config=config,
                 domain=domain,
                 nucleation_model=nuc_model,
@@ -373,10 +389,11 @@ def run_single(
             C = step_result.C
             h = step_result.h
             V_prev = step_result.V_field
-            flux_history.append(step_result.total_flux)
+            flux_history.append(step_result.total_flux * step_dt)
+            t += step_dt
 
             # Record timeseries
-            record_ts = (step % ts_stride == 0) or (step in snapshot_indices)
+            record_ts = (step % ts_stride == 0) or (step in snapshot_indices) or step == n_steps-1
             if record_ts and n_electrode > 0:
                 mean_h_val = float(np.mean(h))
                 max_h_val = float(np.max(h))
@@ -407,7 +424,7 @@ def run_single(
         h_history_arr = np.array([snap["h"] for snap in snapshots]) if snapshots else None
         t_snap_arr = np.array([snap["time"] for snap in snapshots]) if snapshots else None
         flux_arr = np.array(flux_history)
-        dt_arr = np.full(len(flux_history), dt)
+        dt_arr = np.ones(len(flux_history))  # history already contains integrated flux
 
         all_metrics = compute_all_metrics(
             h=h,
@@ -448,14 +465,19 @@ def run_single(
             "AI": all_metrics["AI"],
             "UI": all_metrics["UI"],
             "depletion_depth": all_metrics["depletion_depth"],
-            "timescale_ratio": tsr,
-            "mean_growth_rate": all_metrics["mean_growth_rate"],
+            "timescale_ratio": all_metrics["timescale_ratio"],
+            "diffusion_pulse_ratio": tsr,
+            "physics_stage": config.physics.physics_stage,
+            "effective_dt": dt,
+            "model_assumption": "weak-coupling fixed-domain approximation",
+            "mean_growth_rate": float(np.mean(h-initial_h)) / t_end,
             "total_charge_proxy": all_metrics["total_charge_proxy"],
             "roughness": all_metrics["roughness"],
         }
 
         # ---- Persist outputs ---------------------------------------------
-        _save_fields_npz(snapshots, run_dir / "fields.npz")
+        if config.output.save_fields:
+            _save_fields_npz(snapshots, run_dir / "fields.npz")
         _save_thickness_npz(snapshots, electrode_x, run_dir / "thickness.npz")
         _save_timeseries_csv(timeseries, run_dir / "timeseries.csv")
         save_json(metrics, run_dir / "metrics.json")
@@ -464,6 +486,10 @@ def run_single(
         _try_generate_figures(
             run_dir, config, domain, snapshots, electrode_x, timeseries
         )
+
+        if config.output.save_animations and snapshots:
+            from .viz3d import generate_3d_outputs
+            generate_3d_outputs(run_dir, np.array([v["h"] for v in snapshots]), h, electrode_x, grid, config.output.animation_fps)
 
         # ---- Metadata ----------------------------------------------------
         wall_time = time.perf_counter() - wall_t0
@@ -476,6 +502,8 @@ def run_single(
                 "end_time": datetime.now(timezone.utc).isoformat(),
                 "wall_clock_s": wall_time,
                 "n_timesteps": n_steps,
+                "effective_dt": dt,
+                "final_time": t,
                 "n_electrode_cells": n_electrode,
                 "hostname": platform.node(),
                 "python_version": sys.version,

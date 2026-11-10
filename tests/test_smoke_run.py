@@ -106,10 +106,12 @@ class TestDeterminism:
 
         cfg1 = tiny_config.copy()
         cfg1.nucleation.seed = 100
+        cfg1.nucleation.nucleation_rate = 1e7
         m1 = run_single(cfg1, "diff_1", tmp_path, "det2")
 
         cfg2 = tiny_config.copy()
         cfg2.nucleation.seed = 200
+        cfg2.nucleation.nucleation_rate = 1e7
         m2 = run_single(cfg2, "diff_2", tmp_path, "det2")
 
         # With different nucleation noise, results should differ at least slightly
@@ -117,6 +119,7 @@ class TestDeterminism:
         # At minimum, check both complete without error
         assert "error" not in m1
         assert "error" not in m2
+        assert m1["mean_h"] != m2["mean_h"]
 
 
 class TestGeometryBuild:

@@ -300,10 +300,10 @@ def generate_all_run_figures(
 
     # Time series
     if not ts_df.empty:
-        t = ts_df["t"].values
+        t = ts_df["time"].values
         plot_timeseries_thickness(t, ts_df["mean_h"].values, ts_df["max_h"].values,
                                   fig_dir / "timeseries_thickness.png", dpi)
-        plot_timeseries_flux(t, ts_df["total_flux"].values, fig_dir / "timeseries_flux.png", dpi)
+        plot_timeseries_flux(t, ts_df["flux"].values, fig_dir / "timeseries_flux.png", dpi)
 
     # Timescale panel
     D = config.physics.diffusion_coefficient

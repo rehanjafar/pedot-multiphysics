@@ -30,10 +30,8 @@ class GeometryConfig:
     geometry_type: str = "narrow"  # "narrow" or "wide"
 
     def __post_init__(self) -> None:
-        if self.geometry_type == "narrow":
-            self.bridge_width = C.BRIDGE_WIDTH_NARROW
-        elif self.geometry_type == "wide":
-            self.bridge_width = C.BRIDGE_WIDTH_WIDE
+        if self.bridge_width <= 0:
+            raise ValueError("bridge_width must be positive; geometry_type is a label only")
 
 
 @dataclass
@@ -88,7 +86,7 @@ class NumericalConfig:
 @dataclass
 class NucleationConfig:
     """Stochastic nucleation settings."""
-    enable_noise: bool = True
+    enable_noise: bool = False
     noise_amplitude: float = 1.0e-9  # [m] initial perturbation amplitude
     nucleation_rate: float = 1.0e3  # Poisson rate parameter [events/(m*s)]
     seed: int = 42
@@ -98,7 +96,7 @@ class NucleationConfig:
 class OutputConfig:
     """Output and visualization settings."""
     save_fields: bool = True
-    save_animations: bool = True
+    save_animations: bool = False
     dpi: int = 300
     animation_fps: int = 20
     figure_format: str = "png"  # png / svg
@@ -136,6 +134,39 @@ class SimConfig:
     def copy(self) -> SimConfig:
         """Return a deep copy of this config."""
         return copy.deepcopy(self)
+
+
+def validate_config(config: SimConfig) -> None:
+    import math
+    for section in asdict(config).values():
+        for value in section.values():
+            if isinstance(value, (int, float)) and not math.isfinite(value):
+                raise ValueError("Configuration numbers must be finite")
+    n, g, ph, w = config.numerical, config.geometry, config.physics, config.waveform
+    if n.Nx < 3 or n.Ny < 3 or n.dt <= 0 or n.t_end <= 0 or n.n_snapshots < 0:
+        raise ValueError("Invalid grid, timestep, duration or snapshot count")
+    if not 0 <= n.implicit_theta <= 1 or n.laplace_tol <= 0 or n.laplace_max_iter < 1:
+        raise ValueError("Invalid solver settings")
+    if min(g.compartment_width, g.compartment_height, g.bridge_length, g.bridge_width, g.electrode_length) <= 0:
+        raise ValueError("Geometry dimensions must be positive")
+    if g.bridge_width > g.compartment_height or g.electrode_length > g.bridge_length:
+        raise ValueError("Bridge/electrode does not fit domain")
+    if g.electrode_y_fraction != 0.5:
+        raise ValueError("Only a centred electrode is currently supported")
+    if ph.physics_stage.upper() not in ('A', 'B', 'C', 'D'):
+        raise ValueError("Unknown physics stage")
+    if ph.C_bulk <= 0 or ph.T <= 0 or ph.diffusion_coefficient < 0 or ph.k_rxn < 0 or ph.j0 < 0:
+        raise ValueError("Invalid physical parameters")
+    if not 0 < ph.alpha < 1 or ph.n_electrons <= 0 or ph.beta_field < 0:
+        raise ValueError("Invalid kinetic parameters")
+    if w.frequency <= 0 or w.waveform_type not in ('sinusoidal', 'pulsed', 'asymmetric_adc'):
+        raise ValueError("Invalid waveform")
+    if not 0 < w.duty_cycle < 1 or not 0 <= w.rest_fraction < 1 or not 0 <= w.adc_ratio <= 1:
+        raise ValueError("Invalid waveform fractions")
+    if config.nucleation.nucleation_rate < 0 or config.nucleation.noise_amplitude < 0:
+        raise ValueError("Invalid stochastic settings")
+    if config.output.figure_format not in ('png', 'svg'):
+        raise ValueError("Unsupported figure format")
 
 
 def _to_serializable(obj: Any) -> Any:
