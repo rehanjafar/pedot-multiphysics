@@ -1,3 +1,12 @@
+## 0.4.0 — traceable published evidence and scientific depictions
+
+- Bundle six attributed CC BY 4.0 numerical subsets (2,138 records), verify source/subset hashes and retain source row/column provenance. Flag the unresolved 10 Hz zero area; distinguish spatial SD from independent replication and reference-electrode CV from terminal voltage.
+- Add seven published-data figures, offline interactive parameter-space traces, and source/quality metadata. Exclude circuit simulations and fitted parameters from measurement tables.
+- Make PNG/SVG/interactive 3D galleries core outputs, with explicit axes, numerical downloads and illustrative-extrusion OBJ files. Preserve recorded timing in GIFs and offer archive-only re-rendering.
+- Archive the direct-wire potential with the geometry and midpoint time actually solved. Save per-integration-step strip inventories and exact measured-trace cumulative energy.
+- Correct the public growth-rate helper to use graded surface weights; remove unjustified regime labels and equal-width bars on nonuniform positions.
+- Add 21 numerical/provenance/export regression tests and retain the complete analytic, security, scientific and refinement suite.
+
 # Scientific correctness and readiness fixes
 
 These changes invalidate quantitative comparisons to output from the original 0.1.0 source. Start new campaigns.

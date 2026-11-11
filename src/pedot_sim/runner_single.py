@@ -116,7 +116,7 @@ def _save_timeseries_csv(
 
 
 # ---------------------------------------------------------------------------
-# Figure generation (best-effort; failures logged, not fatal)
+# Figure generation (legacy previews plus required scientific gallery)
 # ---------------------------------------------------------------------------
 
 def _try_generate_figures(
@@ -127,7 +127,7 @@ def _try_generate_figures(
     electrode_x: np.ndarray,
     timeseries: List[TimeseriesRecord],
 ) -> None:
-    """Best-effort figure generation.  Failures are logged but not fatal."""
+    """Generate legacy previews and a required, auditable scientific gallery."""
     fig_dir = ensure_dir(run_dir / "figures")
 
     try:
@@ -144,6 +144,9 @@ def _try_generate_figures(
         _plot_concentration_snapshots(snapshots, domain, config, fig_dir)
     except Exception:
         logger.warning("Failed to generate concentration snapshot figure", exc_info=True)
+
+    from .research_figures import strip_figures
+    strip_figures(run_dir)
 
 
 def _plot_thickness_evolution(
@@ -170,7 +173,7 @@ def _plot_thickness_evolution(
         f"PEDOT thickness evolution  (f={config.waveform.frequency:.0f} Hz, "
         f"D={config.physics.diffusion_coefficient:.1e} m\u00b2/s)"
     )
-    if len(snapshots) <= 10:
+    if 0 < len(snapshots) <= 10:
         ax.legend(fontsize=7)
     fig.tight_layout()
     fig.savefig(out_dir / f"thickness_evolution.{config.output.figure_format}", dpi=config.output.dpi)
@@ -279,7 +282,7 @@ def run_single(
         Metrics dictionary summarising the run outcome.  On failure the
         dict will contain ``"status": "failed"`` and an ``"error"`` key.
     """
-    from .utils_grid import electrode_weights, cell_widths
+    from .utils_grid import electrode_weights, cell_widths, cell_areas
     from .research import process_diagnostics, ohmic_power_per_depth
     from .waveforms import integration_times
     from .config import validate_config
@@ -335,6 +338,9 @@ def run_single(
         # ---- Initialise fields -------------------------------------------
         C = np.where(domain.domain_mask, config.physics.C_bulk, 0.)
         initial_C = C.copy()
+        volumes = cell_areas(grid)
+        initial_inventory = float(np.sum(C*volumes))
+        integration_records = []
 
         # Electrode cells for h
         e_rows, e_cols = np.where(domain.electrode_mask)
@@ -404,6 +410,17 @@ def run_single(
             max_laplace_residual = max(max_laplace_residual, step_result.solver_info.get("laplace_residual", 0.))
             if energy is not None:
                 energy += ohmic_power_per_depth(V_prev, domain, config.physics.conductivity)*step_dt
+
+            remaining_inventory = float(np.sum(C*volumes))
+            integration_records.append({
+                "time_start_s": float(endpoints[step]), "time_end_s": t,
+                "applied_voltage_midpoint_V": step_result.solver_info["applied_voltage_midpoint"],
+                "consumed_mol_per_m": consumed_total,
+                "reservoir_exchange_mol_per_m": reservoir_total,
+                "remaining_inventory_mol_per_m": remaining_inventory,
+                "balance_error_mol_per_m": initial_inventory+reservoir_total-remaining_inventory-consumed_total,
+                "electrolyte_ohmic_energy_J_per_m": energy,
+            })
 
             # Record timeseries
             record_ts = (step % ts_stride == 0) or (step in snapshot_indices) or step == n_steps-1
@@ -506,10 +523,15 @@ def run_single(
         metrics.update(process_metrics)
         save_json(audit, run_dir / "research_audit.json")
         # Final state is always saved even when snapshot output is disabled.
-        save_npz({"h": h, "x": electrode_x, "C": C,
+        final_arrays = {"h": h, "x": electrode_x, "C": C,
                   "domain_mask": domain.domain_mask, "electrode_mask": domain.electrode_mask,
-                  "grid_x": grid.x, "grid_y": grid.y, "widths_x": cell_widths(grid)[0], "widths_y": cell_widths(grid)[1]},
-                 run_dir / "final_state.npz")
+                  "grid_x": grid.x, "grid_y": grid.y, "widths_x": cell_widths(grid)[0], "widths_y": cell_widths(grid)[1]}
+        if V_prev is not None:
+            final_arrays.update(potential_V=V_prev, field_magnitude_V_per_m=step_result.E_mag,
+                                potential_time_s=(endpoints[-1]+endpoints[-2])/2)
+        final_arrays["reaction_rate_last_step_mol_per_m3_s"] = step_result.R_field
+        save_npz(final_arrays, run_dir / "final_state.npz")
+        save_csv(pd.DataFrame(integration_records), run_dir / "integration_diagnostics.csv")
 
         # ---- Persist outputs ---------------------------------------------
         if config.output.save_fields:
@@ -525,7 +547,7 @@ def run_single(
 
         if config.output.save_animations and snapshots:
             from .viz3d import generate_3d_outputs
-            generate_3d_outputs(run_dir, np.array([v["h"] for v in snapshots]), h, electrode_x, grid, config.output.animation_fps)
+            generate_3d_outputs(run_dir, np.array([v["h"] for v in snapshots]), h, electrode_x, grid, config.output.animation_fps, snapshot_times=np.array([v["time"] for v in snapshots]))
 
         # ---- Metadata ----------------------------------------------------
         wall_time = time.perf_counter() - wall_t0

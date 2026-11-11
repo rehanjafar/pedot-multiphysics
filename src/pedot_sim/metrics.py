@@ -133,9 +133,7 @@ def timescale_ratio(
     """Compute timescale ratio tau_diff / tau_rxn.
 
     tau_diff = L^2 / D      (diffusion timescale)
-    tau_rxn = 1 / k_rxn     (reaction timescale, note: k_rxn has units [m/s],
-                              so tau_rxn = L / k_rxn for surface reaction
-                              or simply 1/k_rxn if k_rxn is [1/s])
+    tau_rxn = L / k_rxn    (surface-reaction timescale; k_rxn has units [m/s])
 
     For a heterogeneous rate constant k [m/s] and characteristic length L:
         tau_diff = L^2 / D
@@ -167,6 +165,7 @@ def timescale_ratio(
 def mean_growth_rate(
     h_history: np.ndarray,
     t_array: np.ndarray,
+    weights=None,
 ) -> float:
     """Average growth rate over time.
 
@@ -184,7 +183,7 @@ def mean_growth_rate(
     """
     if len(t_array) < 2:
         return 0.0
-    mean_h = np.mean(h_history, axis=1)
+    mean_h = np.average(h_history, axis=1, weights=weights)
     total_growth = mean_h[-1] - mean_h[0]
     total_time = t_array[-1] - t_array[0]
     if total_time == 0:
@@ -273,7 +272,7 @@ def compute_all_metrics(
 
     mgr = 0.0
     if h_history is not None and t_array is not None:
-        mgr = mean_growth_rate(h_history, t_array)
+        mgr = mean_growth_rate(h_history, t_array, weights)
 
     tcp = 0.0
     if flux_history is not None and dt_array is not None:

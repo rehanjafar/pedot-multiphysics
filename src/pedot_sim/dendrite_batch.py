@@ -86,7 +86,8 @@ def run_dendrite_batch(config, campaign_id, output_base, periods, replicates=5):
         for key, cfg in jobs:
             run_dir = safe_output_path(output_base, "dendrites", campaign_id, key)
             if run_dir.exists():
-                required = ["metadata.json","params.json","metrics.json","morphology.npz","timeseries.csv","morphology.png"]
+                required = ["metadata.json","params.json","metrics.json","morphology.npz","timeseries.csv","morphology.png",
+                            "views/index.html","views/network_illustrative.obj","views/plotly.min.js"]
                 if not all((run_dir/name).is_file() for name in required):
                     raise ValueError(f"Incomplete run {key}; preserved for inspection, use a new campaign ID")
                 metadata = json.loads((run_dir/"metadata.json").read_text())

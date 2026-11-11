@@ -108,4 +108,6 @@ def analyze_manufacturing(trace_path, metadata_path, output_dir):
     (out/"manufacturing_report.html").write_text(
         "<!doctype html><meta charset='utf-8'><h1>Measured manufacturing accounts</h1><pre>"+
         html.escape(json.dumps(report,indent=2))+"</pre>",encoding="utf-8")
+    from .research_figures import manufacturing_figures
+    manufacturing_figures(frame, out)
     return report

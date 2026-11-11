@@ -169,6 +169,8 @@ def simulate_dendrites(config: DendriteConfig):
         voltage = float(pulsed((time+end)/2, config.offset_V, config.amplitude_V,
                                1/config.period_steps, config.duty_cycle))
         V = unit*voltage
+        potential_owner = owner.copy()
+        potential_time = float((time+end)/2)
         max_residual = max(max_residual, residual*abs(voltage))
         # Face rates toward each neighbor; no particle flux across external walls.
         rates = np.zeros((*owner.shape, 4))
@@ -228,6 +230,7 @@ def simulate_dendrites(config: DendriteConfig):
         snapshot_times.append(metrics["elapsed_model_steps"])
     # Do not solve a shorted geometry. The last solved potential is explicitly pre-update.
     return {"owner": owner, "initial_owner": initial, "mobile_positions": positions[alive],
+            "potential_V": V, "potential_owner": potential_owner, "potential_time": potential_time,
             "snapshots": np.asarray(snapshots), "snapshot_times": np.array(snapshot_times), "records": records, "metrics": metrics,
             "max_laplace_residual": max_residual}
 
@@ -242,7 +245,7 @@ def run_dendrite(config, run_id, output_base, campaign_id="dendrites"):
     save_json(asdict(config), run_dir/"params.json")
     try:
         result = simulate_dendrites(config)
-        save_npz({key: result[key] for key in ("owner", "initial_owner", "mobile_positions", "snapshots", "snapshot_times")}, run_dir/"morphology.npz")
+        save_npz({key: result[key] for key in ("owner", "initial_owner", "mobile_positions", "snapshots", "snapshot_times", "potential_V", "potential_owner", "potential_time")}, run_dir/"morphology.npz")
         save_csv(pd.DataFrame(result["records"]), run_dir/"timeseries.csv")
         save_json(result["metrics"], run_dir/"metrics.json")
         save_json({"provenance": runtime_provenance(), "status": "completed", "max_laplace_residual": result["max_laplace_residual"],
@@ -266,6 +269,8 @@ def run_dendrite(config, run_id, output_base, campaign_id="dendrites"):
                title="Directly driven wire growth — uncalibrated aggregate model")
         fig.savefig(run_dir/"morphology.png", dpi=180)
         plt.close(fig)
+        from .research_figures import dendrite_figures
+        dendrite_figures(result, config, run_dir)
         return {"run_dir": str(run_dir), **result["metrics"]}
     except Exception as exc:
         save_json({"status": "failed", "error": str(exc)}, run_dir/"metadata.json")
@@ -320,5 +325,8 @@ def analyze_dendrite_campaign(campaign_id, output_base):
               "<h2>Bridging probability and censored time</h2>"+bridging.to_html(index=False, escape=True))
     for run in df.run_id:
         report += '<figure><img width="650" src="'+html.escape(run, quote=True)+'/morphology.png"><figcaption>'+html.escape(run)+'</figcaption></figure>'
+    from .research_figures import ensemble_figures
+    ensemble_figures(df, bridging, conditions, root)
+    report += '<p><a href="views/index.html">Purposeful figures and uncertainty views</a></p>'
     (root/"report.html").write_text(report, encoding="utf-8")
     return root/"report.html"

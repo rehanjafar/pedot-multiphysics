@@ -13,7 +13,7 @@ python -m pip install -e '.[dev]'
 python -m pytest tests --cov=pedot_sim --cov-report=term-missing
 ```
 
-GitHub checks use Ubuntu 22.04 and Python 3.11–3.15. Release 0.3 requires Python 3.11+ because Python 3.9/3.10 are [past upstream support](https://devguide.python.org/versions/); the development dependencies require the patched pytest 9.0.3 or later. Tests cover analytic diffusion/convergence, potential boundary conditions, conservation, waveform timing, direct-wire geometry feedback, seeded growth, invalid inputs, measurement comparisons and output workflows. Passing these tests is not experimental validation.
+GitHub checks use Ubuntu 22.04 and Python 3.11–3.15. Release 0.4 requires Python 3.11+ because Python 3.9/3.10 are [past upstream support](https://devguide.python.org/versions/); the development dependencies require the patched pytest 9.0.3 or later. Tests cover analytic diffusion/convergence, potential boundary conditions, conservation, waveform timing, direct-wire geometry feedback, seeded growth, invalid inputs, measurement comparisons and output workflows. Passing these tests is not experimental validation.
 
 See [Verification results](docs/VERIFICATION_RESULTS.md) for the checked benchmark, reproducible commands, test scope and remaining evidence gaps.
 
@@ -70,7 +70,7 @@ A changed source/configuration fingerprint requires a new campaign ID. Existing 
 
 ## Compare measurements
 
-No experimental datasets are bundled. For thickness, supply simulation and experimental CSVs with `time,mean_h` in seconds/metres, plus metadata such as:
+Published reference data are bundled as described below; no matched calibration or independent validation dataset for these models is supplied. For thickness validation, supply simulation and experimental CSVs with `time,mean_h` in seconds/metres, plus metadata such as:
 
 ```json
 {"source": "Your dataset identifier or DOI", "units": {"time": "s", "mean_h": "m"}}
@@ -96,10 +96,25 @@ CSV columns are `time_s,voltage_V,current_A`. Metadata requires a source identif
 {"source":"Your experiment ID", "units":{"time_s":"s","voltage_V":"V","current_A":"A"}}
 ```
 
-Optional metadata fields are `dry_product_mass_kg`, `initial_monomer_mass_kg`, `film_area_m2`, `mean_thickness_m`, `four_terminal_resistance_ohm`, `voltage_probe_spacing_m`, `conducting_width_m` and `frequency_Hz`. Supply only independently measured quantities. Outputs include net/imported/returned terminal energy and charge; optional inputs enable specific energy, mass ratio, effective density and rectangular-film conductivity calculations. Irregular dendrites require their own electrical geometry model. The source files are hashed and assumptions accompany the HTML/CSV/JSON reports. No physical measurement dataset is invented or bundled.
+Optional metadata fields are `dry_product_mass_kg`, `initial_monomer_mass_kg`, `film_area_m2`, `mean_thickness_m`, `four_terminal_resistance_ohm`, `voltage_probe_spacing_m`, `conducting_width_m` and `frequency_Hz`. Supply only independently measured quantities. Outputs include net/imported/returned terminal energy and charge; optional inputs enable specific energy, mass ratio, effective density and rectangular-film conductivity calculations. Irregular dendrites require their own electrical geometry model. The source files are hashed and assumptions accompany the HTML/CSV/JSON reports. No process measurement dataset is invented; the separately bundled published reference data do not establish your process energy or yield.
 
-## Optional output and license
+## Published evidence and visual outputs
 
-`pip install -e '.[viz3d,io]'` enables optional animation dependencies. Legacy 3D views extrude a one-dimensional thickness profile; they are not three-dimensional physics. PDF reports require an optional renderer. Dependency ranges are not a lockfile or a claim of zero vulnerabilities.
+```sh
+pedot-sim analyze-literature --output-dir data/published_evidence
+pedot-sim visualize-run --run-dir data/dendrites/wires_v1/seed42
+```
 
-MIT; see [LICENSE](LICENSE). Cite the software revision, complete configuration, primary scientific sources, numerical resolution and independent validation evidence in scientific use.
+Open `data/published_evidence/index.html` for seven purposeful figures from **2,138 published records** across six numerical tables: amplitude and frequency morphology, offset asymmetry, growth histories, impedance and first-cycle voltammetry. They are curated from [Janzakova et al. (2021)](https://doi.org/10.1038/s41467-021-27274-9) and the [versioned numerical dataset](https://doi.org/10.6084/m9.figshare.16814710.v1), with source hashes, row/column provenance, conversions and CC BY 4.0 attribution. These observations are reference evidence; they do not calibrate the independent model.
+
+Every new simulation produces `views/index.html` with PNG and editable SVG figures, offline interactive 3D views, numerical arrays and captions explaining the purpose and limits. Direct-wire runs also produce an OBJ network mesh, the last solved potential **with its pre-attachment geometry and midpoint time**, and growth snapshots. Fixed-strip runs save every integration interval's material balance and an actual-time thickness history. Enabling `output.save_animations` generates a GIF from recorded profiles when at least two snapshots exist. `visualize-run` re-renders saved states without rerunning physics.
+
+The 3D network is a one-cell illustrative extrusion, not a measured volume or a 3D transport solver. Thickness-history surfaces use time as an axis. Published growth traces use time, voltage and projected area; they do not interpolate a surface between measured conditions. Preserve captions and assumptions when exporting. Keep each gallery folder and its local `plotly.min.js` together for offline use.
+
+Read [Data and visualization quality](docs/DATA_AND_VISUALIZATION.md) for source limitations, the flagged 10 Hz anomaly, correct interpretation of error bars, exact output locations and reproduction commands.
+
+## Output dependencies and license
+
+Static and interactive 3D output and GIF animation are core features; no PyVista/OpenGL installation is required. The empty `viz3d` extra is retained for installation compatibility. `io` supplies optional columnar/movie tools; PDF reports require an optional renderer. Dependency ranges are not a lockfile or a claim of zero vulnerabilities.
+
+Software: [MIT](LICENSE). Bundled Janzakova numerical data: [CC BY 4.0 with attribution and modifications](src/pedot_sim/datasets/janzakova2021/ATTRIBUTION.md). Cite the software revision, configuration, primary sources, resolution and independent validation evidence in scientific use.

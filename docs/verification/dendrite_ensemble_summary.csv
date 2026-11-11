@@ -1,4 +1,4 @@
 nx,ny,wire_length,wire_width,n_particles,steps,integration_dt,period_steps,amplitude_V,offset_V,duty_cycle,diffusion_cells2_per_step,mobility_cells2_per_V_step,species_charge_sign,attachment_probability,activation_voltage_V,snapshot_stride,replicates,bridged_count,censored_count,bridge_probability,bridge_probability_95_low,bridge_probability_95_high,restricted_mean_time_model_steps,restricted_mean_standard_error,conditional_mean_bridge_time_model_steps
-61,41,10,3,500,400,1.0,20.0,5.0,0.0,0.5,0.15,0.5,-1,0.25,0.02,20,5,0,5,0.0,0.0,0.43448246478317476,400.0,0.0,
-61,41,10,3,500,400,1.0,40.0,5.0,0.0,0.5,0.15,0.5,-1,0.25,0.02,20,5,0,5,0.0,0.0,0.43448246478317476,400.0,0.0,
-61,41,10,3,500,400,1.0,80.0,5.0,0.0,0.5,0.15,0.5,-1,0.25,0.02,20,5,0,5,0.0,0.0,0.43448246478317476,400.0,0.0,
+61,41,10,3,500,400,1.0,20.0,5.0,0.0,0.5,0.15,0.5,-1,0.25,0.02,20,10,0,10,0.0,0.0,0.27753279986288926,400.0,0.0,
+61,41,10,3,500,400,1.0,40.0,5.0,0.0,0.5,0.15,0.5,-1,0.25,0.02,20,10,0,10,0.0,0.0,0.27753279986288926,400.0,0.0,
+61,41,10,3,500,400,1.0,80.0,5.0,0.0,0.5,0.15,0.5,-1,0.25,0.02,20,10,0,10,0.0,0.0,0.27753279986288926,400.0,0.0,

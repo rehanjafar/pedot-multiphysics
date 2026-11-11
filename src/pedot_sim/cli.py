@@ -306,6 +306,24 @@ def _cmd_analyze_dendrites(args):
     return 0
 
 
+def _cmd_analyze_literature(args):
+    from .literature import analyze_literature
+    print(analyze_literature(args.output_dir))
+    return 0
+
+
+def _cmd_curate_literature(args):
+    from .literature import curate_source
+    curate_source(args.source_csv, args.output_dir)
+    return 0
+
+
+def _cmd_visualize_run(args):
+    from .research_figures import visualize_run
+    print(visualize_run(args.run_dir))
+    return 0
+
+
 def _cmd_validate(args):
     from .validation import compare_measurements
     result = compare_measurements(args.simulation, args.experiment, args.metadata,
@@ -537,6 +555,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ma = subparsers.add_parser("analyze-manufacturing", help="Analyze measured electrical traces and optional film measurements")
     for name in ("trace", "metadata", "output-dir"):
         p_ma.add_argument("--"+name, type=Path, required=True)
+    p_lit = subparsers.add_parser("analyze-literature", help="Plot bundled, traceable published experimental data")
+    p_lit.add_argument("--output-dir", type=Path, required=True)
+    p_curate = subparsers.add_parser("curate-literature", help="Recreate reference subsets from the hash-verified original CSV")
+    p_curate.add_argument("--source-csv", type=Path, required=True)
+    p_curate.add_argument("--output-dir", type=Path, required=True)
+    p_vis = subparsers.add_parser("visualize-run", help="Generate offline 2D/3D galleries from archived values")
+    p_vis.add_argument("--run-dir", type=Path, required=True)
     return parser
 
 
@@ -545,6 +570,9 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 _COMMAND_DISPATCH = {
+    "analyze-literature": _cmd_analyze_literature,
+    "curate-literature": _cmd_curate_literature,
+    "visualize-run": _cmd_visualize_run,
     "run-single": _cmd_run_single,
     "run-batch": _cmd_run_batch,
     "verify": _cmd_verify,

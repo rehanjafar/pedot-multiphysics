@@ -163,8 +163,7 @@ def plot_thickness_heatmap(
 ) -> None:
     """Plot film thickness as a 1D bar/profile along electrode."""
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.bar(electrode_x * 1e3, h * 1e6, width=(electrode_x[1] - electrode_x[0]) * 1e3 if len(electrode_x) > 1 else 0.01,
-           color="steelblue", edgecolor="navy", linewidth=0.5)
+    ax.plot(electrode_x * 1e3, h * 1e6, color="steelblue", marker=".", linewidth=1.5)
     ax.set_xlabel("x along electrode [mm]")
     ax.set_ylabel("Film thickness [µm]")
     ax.set_title("PEDOT Film Thickness Profile")
@@ -238,7 +237,8 @@ def plot_timescale_panel(
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     # Bar chart
     ax = axes[0]
-    bars = ax.bar(["τ_diff", "τ_rxn"], [tau_diff, tau_rxn], color=["royalblue", "coral"])
+    values=np.array([tau_diff,tau_rxn],float)
+    bars = ax.bar(["τ_diff", "τ_rxn"], np.where(np.isfinite(values),values,0), color=["royalblue", "coral"])
     ax.set_ylabel("Timescale [s]")
     ax.set_title("Competing Timescales")
     for bar, val in zip(bars, [tau_diff, tau_rxn]):
@@ -246,12 +246,12 @@ def plot_timescale_panel(
                 ha="center", va="bottom", fontsize=9)
     # Ratio indicator
     ax = axes[1]
-    ax.barh(["τ_diff / τ_rxn"], [ratio], color="seagreen" if ratio < 1 else "orangered")
+    ax.barh(["τ_diff / τ_rxn"], [ratio if np.isfinite(ratio) else 0], color="steelblue")
     ax.axvline(1.0, color="k", linestyle="--", linewidth=1)
     ax.set_xlabel("Ratio")
     ax.set_title(f"Timescale Ratio = {ratio:.3f}")
-    ax.text(ratio, 0, f" {'Reaction-limited' if ratio < 1 else 'Diffusion-limited'}",
-            va="center", fontsize=9)
+    ax.text(.5, -.25, "Characteristic times only; no validated regime classification",
+            transform=ax.transAxes, ha="center", fontsize=8)
     plt.tight_layout()
     fig.savefig(save_path, dpi=dpi)
     plt.close(fig)

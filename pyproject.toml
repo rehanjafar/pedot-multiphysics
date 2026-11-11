@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pedot-multiphysics"
-version = "0.3.0"
+version = "0.4.0"
 description = "Multiphysics simulation of PEDOT electropolymerization"
 readme = "README.md"
-license = "MIT"
-license-files = ["LICENSE"]
+license = "MIT AND CC-BY-4.0"
+license-files = ["LICENSE", "src/pedot_sim/datasets/janzakova2021/ATTRIBUTION.md"]
 requires-python = ">=3.11"
 authors = [
     {name = "Rehan Lab"},
@@ -32,12 +32,12 @@ dependencies = [
     "pandas>=2.0,<4",
     "statsmodels>=0.14,<1",
     "jinja2>=3.1,<4",
+    "plotly>=6,<7",
+    "pillow>=10,<14",
 ]
 
 [project.optional-dependencies]
-viz3d = [
-    "pyvista>=0.42,<1",
-]
+viz3d = []  # Kept for installation compatibility; 3D output is now a core feature.
 io = [
     "pyarrow>=14,<19",
     "imageio>=2.31,<3",
@@ -60,7 +60,7 @@ pedot-sim = "pedot_sim.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-pedot_sim = ["templates/*.j2"]
+pedot_sim = ["templates/*.j2", "datasets/janzakova2021/*.csv", "datasets/janzakova2021/*.json", "datasets/janzakova2021/*.md"]
 
 [tool.ruff]
 line-length = 100
