@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "failures": [],
+  "t_end": 10.0,
+  "physics_stage": "A",
+  "relative_tolerance": 0.05,
+  "interpretation": "Numerical output agreement only; not experimental validation."
+}

@@ -94,13 +94,18 @@ def build_domain(geo: GeometryConfig, num: NumericalConfig) -> DomainInfo:
     Lx = 2 * cw + bl
     Ly = ch
 
-    grid = create_grid(Lx, Ly, num.Nx, num.Ny)
+    if num.mesh_stretch:
+        from .utils_grid import create_refined_grid
+        centre = cw+bl/2
+        grid = create_refined_grid(Lx, Ly, num.Nx, num.Ny,
+            [cw, centre-el/2, centre+el/2, cw+bl],
+            [Ly/2-bw/2, Ly/2, Ly/2+bw/2], num.mesh_stretch)
+    else:
+        grid = create_grid(Lx, Ly, num.Nx, num.Ny)
 
     y_center = Ly / 2.0
     bridge_y_lo = y_center - bw / 2.0
     bridge_y_hi = y_center + bw / 2.0
-    bridge_x_lo = cw
-    bridge_x_hi = cw + bl
 
     # Region masks (Ny, Nx)
     left_mask = grid.X <= cw

@@ -1,14 +1,15 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pedot-multiphysics"
-version = "0.2.0"
+version = "0.3.0"
 description = "Multiphysics simulation of PEDOT electropolymerization"
 readme = "README.md"
-license = {text = "MIT"}
-requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
 authors = [
     {name = "Rehan Lab"},
 ]
@@ -18,10 +19,11 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Chemistry",
     "Topic :: Scientific/Engineering :: Physics",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
 ]
 dependencies = [
     "numpy>=1.24,<3",
@@ -42,8 +44,8 @@ io = [
     "imageio[ffmpeg]",
 ]
 dev = [
-    "pytest>=7.4,<9",
-    "pytest-cov>=4.1,<6",
+    "pytest>=9.0.3,<10",
+    "pytest-cov>=6,<8",
     "ruff>=0.1,<1",
     "mypy>=1.5,<2",
 ]
@@ -62,13 +64,13 @@ pedot_sim = ["templates/*.j2"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

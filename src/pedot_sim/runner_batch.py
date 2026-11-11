@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import json
 import hashlib
-import subprocess
 import logging
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict
 from itertools import product
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -30,14 +29,12 @@ from pedot_sim.config import (
     PhysicsConfig,
     SimConfig,
     WaveformConfig,
-    load_config,
 )
 from pedot_sim.constants import D_LEVELS as _CONST_D_LEVELS
 from pedot_sim.utils_io import (
     RunManifest,
     ensure_dir,
     get_campaign_dir,
-    get_run_dir,
     load_json,
     save_csv,
     save_json,

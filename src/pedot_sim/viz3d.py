@@ -12,9 +12,7 @@ Gracefully degrades if PyVista or ffmpeg is not available.
 from __future__ import annotations
 
 import logging
-import warnings
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 

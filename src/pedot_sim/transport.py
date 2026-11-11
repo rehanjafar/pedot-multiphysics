@@ -7,7 +7,9 @@ Stage A: Pure diffusion-reaction
 Stage C: Nernst-Planck (diffusion + migration)
     dC/dt = nabla . (D*nabla(C) + (z*F*D)/(R_gas*T) * C * nabla(V)) - R
 
-Uses conservative masked theta diffusion, upwind migration and local implicit reaction splitting. Overall splitting is first order in time.
+Uses conservative masked theta diffusion coupled to implicit linear reaction.
+Migration and concentration-dependent kinetic coefficients are split in time;
+overall time accuracy is first order.
 """
 
 from __future__ import annotations
@@ -16,28 +18,32 @@ import logging
 
 import numpy as np
 from scipy import sparse
-from scipy.sparse.linalg import spsolve
 
 from . import constants as const
-from .utils_grid import Grid2D
+from .config import PhysicsConfig
 
 logger = logging.getLogger(__name__)
 
 
 def _diffusion_operator(grid, domain_mask):
-    """Cell-centred finite-volume graph Laplacian; insulated inactive faces."""
+    """Conservative finite volumes on uniform or graded Cartesian grids."""
     shape = domain_mask.shape
     ids = np.arange(domain_mask.size).reshape(shape)
     rows, cols, vals = [], [], []
     for axis, spacing in [(0, grid.dy), (1, grid.dx)]:
+        n = shape[axis]
+        coords = getattr(grid, "y" if axis == 0 else "x", np.arange(n)*spacing)
+        widths = getattr(grid, "widths_y" if axis == 0 else "widths_x", np.full(n, spacing))
         a = [slice(None), slice(None)]; b = a.copy()
         a[axis] = slice(None, -1); b[axis] = slice(1, None)
         a, b = tuple(a), tuple(b)
         active = domain_mask[a] & domain_mask[b]
         left, right = ids[a][active], ids[b][active]
-        for i, j in [(left, right), (right, left)]:
-            rows.extend(i); cols.extend(j); vals.extend(np.full(len(i), 1 / spacing**2))
-            rows.extend(i); cols.extend(i); vals.extend(np.full(len(i), -1 / spacing**2))
+        resh = (n-1, 1) if axis == 0 else (1, n-1)
+        for i, j, w in [(left, right, widths[:-1]), (right, left, widths[1:])]:
+            rates = np.broadcast_to((1/(w*np.diff(coords))).reshape(resh), active.shape)[active]
+            rows.extend(i); cols.extend(j); vals.extend(rates)
+            rows.extend(i); cols.extend(i); vals.extend(-rates)
     return sparse.coo_matrix((vals, (rows, cols)), shape=(ids.size, ids.size)).tocsr()
 
 
@@ -45,41 +51,53 @@ from functools import lru_cache
 from scipy.sparse.linalg import factorized
 
 
-@lru_cache(maxsize=16)
-def _diffusion_system(shape, mask_bytes, feeder_bytes, dx, dy, D, dt, theta):
+@lru_cache(maxsize=8)
+def _diffusion_system(shape, mask_bytes, feeder_bytes, x, y, wx, wy, D, dt, theta, reaction_bytes):
     from types import SimpleNamespace
     mask = np.frombuffer(mask_bytes, dtype=bool).reshape(shape)
     feeder = np.frombuffer(feeder_bytes, dtype=bool).reshape(shape)
-    L = D * _diffusion_operator(SimpleNamespace(dx=dx, dy=dy), mask)
+    grid = SimpleNamespace(x=np.array(x), y=np.array(y), widths_x=np.array(wx),
+                           widths_y=np.array(wy), dx=min(wx), dy=min(wy))
+    L = D * _diffusion_operator(grid, mask)
     I = sparse.eye(mask.size, format="csr")
-    lhs = (I - theta * dt * L).tolil()
+    reaction = np.frombuffer(reaction_bytes, dtype=float)
+    lhs = (I - theta * dt * L + sparse.diags(dt*reaction)).tolil()
     for i in np.flatnonzero(feeder | ~mask):
         lhs.rows[i] = [int(i)]; lhs.data[i] = [1.0]
     return factorized(lhs.tocsc()), I + (1-theta) * dt * L
 
 
 def solve_diffusion_step(C, grid, D, dt, R_sink, domain_mask, C_bulk,
-                         left_feeder, right_feeder, theta=0.5):
+                         left_feeder, right_feeder, theta=0.5, reaction_coefficient=None):
     """Theta diffusion solve with reflecting walls and fixed feeder reservoirs.
 
-    Nonnegative reaction is integrated locally by backward Euler after diffusion.
-    The production growth orchestrator handles reaction separately to account for
-    exactly the same consumed material in the deposited film.
+    Nonnegative linear reaction is solved simultaneously with diffusion by backward Euler.
+    The orchestrator accounts for dt*reaction_coefficient*C_new as consumed material.
     """
+    from .utils_grid import cell_widths
+    wx, wy = cell_widths(grid)
+    if C.shape != domain_mask.shape or np.any(C < 0) or not np.isfinite(C).all():
+        raise ValueError("Concentration must be finite, nonnegative and match the domain")
+    if np.any(R_sink < 0) or not np.isfinite(R_sink).all():
+        raise ValueError("Reaction sink must be finite and nonnegative")
+    if D < 0 or dt <= 0 or C_bulk < 0 or not 0 <= theta <= 1:
+        raise ValueError("Invalid diffusion parameters")
     feeder = left_feeder | right_feeder
     fourier = D * dt * (grid.dx**-2 + grid.dy**-2)
     if theta < 0.5 and fourier > 0.5 / (1 - 2*theta):
         raise ValueError("Unstable explicit diffusion timestep")
+    coefficient = (np.divide(R_sink, C, out=np.zeros_like(C), where=C>0)
+                   if reaction_coefficient is None else np.asarray(reaction_coefficient, dtype=float))
+    if coefficient.shape != C.shape or np.any(coefficient < 0) or not np.isfinite(coefficient).all():
+        raise ValueError("Reaction coefficients must be finite, nonnegative and match C")
     solve, rhs_op = _diffusion_system(C.shape, domain_mask.tobytes(),
-        feeder.tobytes(), grid.dx, grid.dy, D, dt, theta)
+        feeder.tobytes(), tuple(grid.x), tuple(grid.y), tuple(wx), tuple(wy), D, float(f"{dt:.12g}"), theta, coefficient.ravel().tobytes())
     rhs = rhs_op @ np.where(domain_mask, C, 0.).ravel()
     rhs[feeder.ravel()] = C_bulk; rhs[~domain_mask.ravel()] = 0.
     result = solve(rhs).reshape(C.shape)
     if not np.isfinite(result).all() or result.min() < -1e-10 * max(1., C_bulk):
         raise ValueError("Diffusion lost positivity; reduce dt or use theta=1")
     result = np.maximum(result, 0.)
-    coefficient = np.divide(R_sink, C, out=np.zeros_like(C), where=C > 0)
-    result /= 1 + dt * coefficient
     result[feeder] = C_bulk
     return result
 
@@ -89,24 +107,36 @@ def add_migration_flux(C, V, grid, D, z, dt, domain_mask, T=const.T_DEFAULT, cfl
 
     This step has closed external faces; the orchestrator resets reservoir cells.
     """
+    from .utils_grid import cell_widths, cell_areas
+    if T <= 0 or D < 0 or dt <= 0 or not 0 < cfl_safety <= 1:
+        raise ValueError("Invalid migration parameters")
+    if not np.isfinite(C).all() or not np.isfinite(V).all() or np.any(C < 0):
+        raise ValueError("Migration needs finite fields and nonnegative concentration")
     mobility = z * const.F * D / (const.R_GAS * T)
     result = np.where(domain_mask, C, 0.).copy()
+    wx, wy = cell_widths(grid)
+    volumes = cell_areas(grid)
     faces = []; outgoing = np.zeros_like(C)
-    for axis, spacing in [(0, grid.dy), (1, grid.dx)]:
+    for axis, coords, widths, face_widths in [(0, grid.y, wy, wx), (1, grid.x, wx, wy)]:
         a = [slice(None), slice(None)]; b = a.copy()
         a[axis] = slice(None, -1); b[axis] = slice(1, None)
         a, b = tuple(a), tuple(b)
-        velocity = -mobility * (V[b] - V[a]) / spacing
+        reshape = (-1, 1) if axis == 0 else (1, -1)
+        distance = np.diff(coords).reshape(reshape)
+        face = face_widths.reshape((1, -1) if axis == 0 else (-1, 1))
+        velocity = -mobility*(V[b]-V[a])/distance
         velocity = np.where(domain_mask[a] & domain_mask[b], velocity, 0.)
-        outgoing[a] += np.maximum(velocity, 0.) / spacing
-        outgoing[b] += np.maximum(-velocity, 0.) / spacing
-        faces.append((a, b, spacing, velocity))
-    n = max(1, int(np.ceil(dt * outgoing.max() / cfl_safety)))
+        outgoing[a] += np.maximum(velocity, 0.)*face/volumes[a]
+        outgoing[b] += np.maximum(-velocity, 0.)*face/volumes[b]
+        faces.append((a, b, face, velocity))
+    n = max(1, int(np.ceil(dt*outgoing.max()/cfl_safety)))
+    if n > 100000:
+        raise ValueError("Migration requires excessive substeps; reduce dt")
     for _ in range(n):
         delta = np.zeros_like(C)
-        for a, b, spacing, velocity in faces:
-            transfer = dt/n/spacing * velocity * np.where(velocity >= 0, result[a], result[b])
-            delta[a] -= transfer; delta[b] += transfer
+        for a, b, face, velocity in faces:
+            transfer = dt/n*face*velocity*np.where(velocity>=0, result[a], result[b])
+            delta[a] -= transfer/volumes[a]; delta[b] += transfer/volumes[b]
         result += delta
     if not np.isfinite(result).all() or result.min() < -1e-10:
         raise ValueError("Invalid migration concentration")
@@ -170,3 +200,21 @@ def compute_reaction_rate(
     else:
         raise ValueError(f"Unknown physics stage: {stage}")
     return R
+
+
+def reservoir_exchange(C_old, C_new, grid, D, dt, theta, domain_mask, feeders):
+    """Independent diffusive boundary flux integral [mol/m], plus imposed-cell reset."""
+    from .utils_grid import cell_widths, cell_areas
+    wx, wy = cell_widths(grid)
+    midpoint = theta*C_new+(1-theta)*C_old
+    amount = float(np.sum((C_new-C_old)[feeders]*cell_areas(grid)[feeders]))
+    for axis, coords, facewidth in [(0, grid.y, wx), (1, grid.x, wy)]:
+        a=[slice(None),slice(None)];b=a.copy()
+        a[axis]=slice(None,-1);b[axis]=slice(1,None);a,b=tuple(a),tuple(b)
+        distance=np.diff(coords).reshape((-1,1) if axis==0 else (1,-1))
+        face=facewidth.reshape((1,-1) if axis==0 else (-1,1))
+        active=domain_mask[a]&domain_mask[b]
+        sign=feeders[a].astype(int)-feeders[b].astype(int)
+        flux=D*dt*(midpoint[a]-midpoint[b])*face/distance
+        amount += float(np.sum(np.where(active, sign*flux, 0.)))
+    return amount

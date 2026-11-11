@@ -5,7 +5,6 @@ import pytest
 
 from pedot_sim.config import WaveformConfig
 from pedot_sim.waveforms import (
-    asymmetric_adc,
     get_boundary_potentials,
     get_waveform,
     pulsed,

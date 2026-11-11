@@ -34,13 +34,14 @@ class DendriteConfig:
     wire_width: int = 3
     n_particles: int = 500
     steps: int = 400
+    integration_dt: float = 1.0  # model-time interval; further capped by waveform resolution
     period_steps: float = 40.
     amplitude_V: float = 5.
     offset_V: float = 0.
     duty_cycle: float = .5
     diffusion_cells2_per_step: float = .15
     mobility_cells2_per_V_step: float = .5
-    species_charge_sign: int = 1
+    species_charge_sign: int = -1  # effective anionic carrier; neutral EDOT is not this particle
     attachment_probability: float = .25
     activation_voltage_V: float = .02
     seed: int = 42
@@ -65,6 +66,8 @@ class DendriteConfig:
             raise ValueError("species_charge_sign must be -1, 0 or 1")
         if not all(np.isfinite(v) for v in asdict(self).values()):
             raise ValueError("All dendrite parameters must be finite")
+        if self.integration_dt <= 0:
+            raise ValueError("integration_dt must be positive")
         if self.period_steps <= 0 or self.amplitude_V < 0 or not 0 < self.duty_cycle < 1:
             raise ValueError("Invalid waveform")
         if min(self.diffusion_cells2_per_step, self.mobility_cells2_per_V_step, self.activation_voltage_V) < 0:
@@ -84,6 +87,12 @@ def initial_electrodes(config):
 
 def solve_network_potential(owner, applied_voltage):
     """Insulating box, ideal equipotential networks: left driven, right grounded."""
+    if owner.ndim != 2 or not np.isin(owner, [0, 1, 2]).all() or not all(np.any(owner==i) for i in (1,2)):
+        raise ValueError("Potential solve requires two valid conductor networks")
+    if not np.isfinite(applied_voltage):
+        raise ValueError("Applied voltage must be finite")
+    if ((owner[:, 1:]*owner[:, :-1]==2).any() or (owner[1:, :]*owner[:-1, :]==2).any()):
+        raise ValueError("Cannot solve an ideal short between driven and grounded networks")
     mask = np.ones(owner.shape, bool)
     L = _diffusion_operator(SimpleNamespace(dx=1., dy=1.), mask)
     solid = owner.ravel() > 0
@@ -115,12 +124,26 @@ def morphology_metrics(owner, initial, mobile_count, config, elapsed):
             "deposited_cells_per_model_step": count/elapsed if elapsed else 0.}
 
 
+def dendrite_time_grid(config):
+    """Resolve every polarity transition and >=40 intervals per drive period."""
+    dt = min(config.integration_dt, config.period_steps/40)
+    count = int(np.ceil(config.steps/dt))
+    if count > 2_000_000:
+        raise ValueError("Dendrite waveform requires more than two million integration intervals")
+    ends = np.minimum(np.arange(count+1)*dt, config.steps)
+    cycles = np.arange(int(np.ceil(config.steps/config.period_steps))+1)
+    jumps = np.concatenate([cycles*config.period_steps,
+                            (cycles+config.duty_cycle)*config.period_steps])
+    ends = np.sort(np.r_[ends, jumps[(jumps>0)&(jumps<config.steps)]])
+    return ends[np.r_[np.diff(ends)>32*np.finfo(float).eps*max(1,config.steps), True]]
+
+
 def simulate_dendrites(config: DendriteConfig):
     """Stochastic, exclusion-lattice drift/diffusion with irreversible attachment.
 
     Hops use conservative upwind drift plus symmetric diffusion rates, subcycled
     so total move probability <=0.8. Failed hops reflect at walls, conductors and
-    other aggregates. Attachment is tested once per model step. Stop at first
+    other aggregates. Attachment is tested each integration interval using a time-scaled hazard. Stop at first
     bridge: an ideal conductor connecting unequal imposed potentials is invalid.
     """
     config.validate()
@@ -132,18 +155,21 @@ def simulate_dendrites(config: DendriteConfig):
     alive = np.ones(config.n_particles, bool)
     occupied = np.zeros(owner.shape, bool)
     occupied[positions[:, 0], positions[:, 1]] = True
-    snapshots, records = [owner.copy()], []
+    snapshots, snapshot_times, records = [owner.copy()], [0.], []
     unit, residual = solve_network_potential(owner, 1.)
     max_residual = residual
     dirty = False
     directions = np.array([[0, 1], [0, -1], [1, 0], [-1, 0]])
-    for step in range(config.steps):
+    endpoints = dendrite_time_grid(config)
+    for step, (time, end) in enumerate(zip(endpoints[:-1], endpoints[1:])):
+        dt = float(end-time)
         if dirty:
             unit, residual = solve_network_potential(owner, 1.)
             max_residual = max(max_residual, residual)
-        voltage = float(pulsed(step+.5, config.offset_V, config.amplitude_V,
+        voltage = float(pulsed((time+end)/2, config.offset_V, config.amplitude_V,
                                1/config.period_steps, config.duty_cycle))
         V = unit*voltage
+        max_residual = max(max_residual, residual*abs(voltage))
         # Face rates toward each neighbor; no particle flux across external walls.
         rates = np.zeros((*owner.shape, 4))
         for k, (dy, dx) in enumerate(directions):
@@ -154,13 +180,13 @@ def simulate_dendrites(config: DendriteConfig):
             if dx == -1: rates[:, 0, k] = 0
             if dy == 1: rates[-1, :, k] = 0
             if dy == -1: rates[0, :, k] = 0
-        substeps = max(1, int(np.ceil(np.max(rates.sum(axis=2))/.8)))
+        substeps = max(1, int(np.ceil(dt*np.max(rates.sum(axis=2))/.8)))
         if substeps > 10000:
             raise ValueError("Transport rates require excessive subcycling; reduce mobility or voltage")
         for _ in range(substeps):
             for i in rng.permutation(np.flatnonzero(alive)):
                 y, x = positions[i]
-                k = int(np.searchsorted(np.cumsum(rates[y, x])/substeps, rng.random()))
+                k = int(np.searchsorted(np.cumsum(rates[y, x])*dt/substeps, rng.random()))
                 if k == 4:
                     continue
                 yy, xx = positions[i]+directions[k]
@@ -169,6 +195,8 @@ def simulate_dendrites(config: DendriteConfig):
                     occupied[yy, xx] = True
                     positions[i] = yy, xx
         # All attachment decisions use the pre-update geometry and potential.
+        probability = (1. if config.attachment_probability==1 else
+                       -np.expm1(dt*np.log1p(-config.attachment_probability)))
         additions = []
         for i in rng.permutation(np.flatnonzero(alive)):
             y, x = positions[i]
@@ -180,7 +208,7 @@ def simulate_dendrites(config: DendriteConfig):
                     metal = voltage if label == 1 else 0.
                     if metal-V[y, x] > config.activation_voltage_V:
                         candidates.append((metal-V[y, x], label))
-            if candidates and rng.random() < config.attachment_probability:
+            if candidates and rng.random() < probability:
                 additions.append((i, max(candidates)[1]))
         dirty = bool(additions)
         for i, label in additions:
@@ -188,17 +216,19 @@ def simulate_dendrites(config: DendriteConfig):
             owner[y, x] = label
             occupied[y, x] = False
             alive[i] = False
-        metrics = morphology_metrics(owner, initial, int(alive.sum()), config, step+1)
-        records.append({"step": step+1, "applied_voltage_V": voltage, **metrics})
-        if (step+1) % config.snapshot_stride == 0 or metrics["bridged"]:
+        metrics = morphology_metrics(owner, initial, int(alive.sum()), config, float(end))
+        records.append({"step": float(end), "integration_step": step+1, "applied_voltage_V": voltage, **metrics})
+        if int(end/config.snapshot_stride)>int(time/config.snapshot_stride) or metrics["bridged"]:
             snapshots.append(owner.copy())
+            snapshot_times.append(float(end))
         if metrics["bridged"]:
             break
-    if not np.array_equal(snapshots[-1], owner):
+    if snapshot_times[-1] != metrics["elapsed_model_steps"]:
         snapshots.append(owner.copy())
+        snapshot_times.append(metrics["elapsed_model_steps"])
     # Do not solve a shorted geometry. The last solved potential is explicitly pre-update.
     return {"owner": owner, "initial_owner": initial, "mobile_positions": positions[alive],
-            "snapshots": np.asarray(snapshots), "records": records, "metrics": metrics,
+            "snapshots": np.asarray(snapshots), "snapshot_times": np.array(snapshot_times), "records": records, "metrics": metrics,
             "max_laplace_residual": max_residual}
 
 
@@ -212,7 +242,7 @@ def run_dendrite(config, run_id, output_base, campaign_id="dendrites"):
     save_json(asdict(config), run_dir/"params.json")
     try:
         result = simulate_dendrites(config)
-        save_npz({key: result[key] for key in ("owner", "initial_owner", "mobile_positions", "snapshots")}, run_dir/"morphology.npz")
+        save_npz({key: result[key] for key in ("owner", "initial_owner", "mobile_positions", "snapshots", "snapshot_times")}, run_dir/"morphology.npz")
         save_csv(pd.DataFrame(result["records"]), run_dir/"timeseries.csv")
         save_json(result["metrics"], run_dir/"metrics.json")
         save_json({"provenance": runtime_provenance(), "status": "completed", "max_laplace_residual": result["max_laplace_residual"],
@@ -260,7 +290,7 @@ def analyze_dendrite_campaign(campaign_id, output_base):
         if json.loads((directory/"metadata.json").read_text()).get("status") != "completed":
             continue
         rows.append({"run_id": directory.name,
-                     **json.loads((directory/"params.json").read_text()),
+                     **asdict(DendriteConfig()), **json.loads((directory/"params.json").read_text()),
                      **json.loads((directory/"metrics.json").read_text())})
     if not rows:
         raise ValueError("No completed dendrite runs")
@@ -270,10 +300,13 @@ def analyze_dendrite_campaign(campaign_id, output_base):
     duplicated = df.duplicated(conditions+["seed"], keep=False)
     if duplicated.any():
         raise ValueError("Duplicate seed/condition runs are not independent replicates")
-    outcomes = ["deposited_cells", "area_asymmetry", "projected_coverage_fraction", "elapsed_model_steps"]
+    outcomes = ["deposited_cells", "area_asymmetry", "projected_coverage_fraction"]
     summary = df.groupby(conditions, dropna=False)[outcomes].agg(["count", "mean", "std", "min", "max"]).reset_index()
     summary.columns = ["_".join(col).strip("_") for col in summary.columns]
     save_csv(summary, root/"descriptive_stats.csv")
+    from .dendrite_batch import summarize_bridging
+    bridging = summarize_bridging(df, conditions)
+    save_csv(bridging, root/"bridging_summary.csv")
     save_json({"status": "exploratory", "n_runs": len(df),
                "interpretation": "Dispersion across random seeds measures this model's stochastic variability, not experimental uncertainty.",
                "bridging": "Compare completion time only with the bridged flag: unbridged runs are right-censored at their stopping step.",
@@ -283,7 +316,8 @@ def analyze_dendrite_campaign(campaign_id, output_base):
               "<p>Exploratory aggregate model. No experimental validation or physical length/time calibration. "
               "Seed-to-seed variability is model variability. Unbridged runs have censored completion times.</p>"
               "<h2>All outcomes and parameters</h2>"+df.to_html(index=False, escape=True)+
-              "<h2>Like-for-like replicate summaries</h2>"+summary.to_html(index=False, escape=True))
+              "<h2>Like-for-like replicate summaries</h2>"+summary.to_html(index=False, escape=True)+
+              "<h2>Bridging probability and censored time</h2>"+bridging.to_html(index=False, escape=True))
     for run in df.run_id:
         report += '<figure><img width="650" src="'+html.escape(run, quote=True)+'/morphology.png"><figcaption>'+html.escape(run)+'</figcaption></figure>'
     (root/"report.html").write_text(report, encoding="utf-8")

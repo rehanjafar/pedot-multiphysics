@@ -12,12 +12,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
 import pandas as pd
 
@@ -55,7 +53,6 @@ def run_anova(df: pd.DataFrame) -> dict:
         Keys: 'AI_anova', 'UI_anova' with ANOVA table DataFrames.
     """
     try:
-        import statsmodels.api as sm
         from statsmodels.formula.api import ols
         from statsmodels.stats.anova import anova_lm
     except ImportError:

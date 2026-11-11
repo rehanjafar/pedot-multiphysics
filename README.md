@@ -6,14 +6,16 @@ Read [Scientific basis and readiness](docs/SCIENTIFIC_BASIS.md) for primary pape
 
 ## Install and test
 
-Python 3.9+; from the repository directory:
+Python 3.11+; from the repository directory:
 
 ```sh
 python -m pip install -e '.[dev]'
 python -m pytest tests --cov=pedot_sim --cov-report=term-missing
 ```
 
-GitHub checks use Ubuntu 22.04 and Python 3.9, 3.12 and 3.14. The OS is explicit because Python 3.9 is unavailable on the latest Ubuntu runner. Tests cover analytic diffusion/convergence, potential boundary conditions, conservation, waveform timing, direct-wire geometry feedback, seeded growth, invalid inputs, measurement comparisons and output workflows. Passing these tests is not experimental validation.
+GitHub checks use Ubuntu 22.04 and Python 3.11–3.15. Release 0.3 requires Python 3.11+ because Python 3.9/3.10 are [past upstream support](https://devguide.python.org/versions/); the development dependencies require the patched pytest 9.0.3 or later. Tests cover analytic diffusion/convergence, potential boundary conditions, conservation, waveform timing, direct-wire geometry feedback, seeded growth, invalid inputs, measurement comparisons and output workflows. Passing these tests is not experimental validation.
+
+See [Verification results](docs/VERIFICATION_RESULTS.md) for the checked benchmark, reproducible commands, test scope and remaining evidence gaps.
 
 ## Direct-wire dendrite research
 
@@ -22,9 +24,17 @@ pedot-sim run-dendrite --config configs/example_dendrites.json --run-id seed42 -
 pedot-sim analyze-dendrites --campaign-id wires_v1 --output-base data
 ```
 
-Outputs are under `data/dendrites/wires_v1/`: each run has parameters, metadata, morphology snapshots, a morphology figure, timeseries and metrics. Campaign analysis writes `results.csv`, descriptive statistics and `report.html`. Change the configuration seed and use a new run ID for independent realizations. Reusing a seed/condition is rejected as replication during analysis.
+Outputs are under `data/dendrites/wires_v1/`: each run has parameters, metadata, morphology snapshots, a morphology figure, timeseries and metrics. Campaign analysis writes `results.csv`, descriptive statistics, censor-aware `bridging_summary.csv` and `report.html`. Change the configuration seed and use a new run ID for independent realizations. Reusing a seed/condition is rejected as replication during analysis.
 
-The lattice model simulates mobile charged aggregates, drift/diffusion, irreversible attachment, equipotential deposits and field feedback. It stops at the first conducting bridge. The left wire is driven and the right is grounded. All geometric quantities are in **lattice cells** and elapsed time in **model steps**. `period_steps` is not a frequency in Hz, and particle count is not molar concentration. Mobility, attachment and activation settings are assumptions. No physical length/time calibration or explicit counter-reaction is included. See the scientific-basis document before comparing maps with laboratory images.
+The lattice model simulates mobile charged aggregates, drift/diffusion, irreversible attachment, equipotential deposits and field feedback. It stops at the first conducting bridge. The left wire is driven and the right is grounded. All geometric quantities are in **lattice cells** and elapsed time in **model steps**. `period_steps` is not a frequency in Hz, and particle count is not molar concentration. Mobility, attachment and activation settings are assumptions. No physical length/time calibration or explicit counter-reaction is included. The example uses effective anionic carriers, not negatively charged EDOT. `integration_dt` controls time refinement; the integrator also resolves waveform transitions and at least 40 intervals per period. See the scientific-basis document before comparing maps with laboratory images.
+
+For independent period/seed ensembles:
+
+```sh
+pedot-sim run-dendrite-batch --config configs/example_dendrites.json --campaign-id wire_ensemble_v1 --periods 20 40 80 --replicates 5 --output-base data
+```
+
+The saved plan supports resuming complete runs with identical code/settings. The bridging summary reports model probability with a Wilson interval, censored counts and restricted mean time. It does not count an unbridged run as a successful completion.
 
 ## Fixed-strip numerical benchmark
 
@@ -32,12 +42,12 @@ The lattice model simulates mobile charged aggregates, drift/diffusion, irrevers
 pedot-sim run-single --config configs/example_verify.json --run-id one --campaign-id strip_v3 --output-base data
 pedot-sim analyze --campaign-id strip_v3 --output-base data
 pedot-sim make-report --campaign-id strip_v3 --output-base data
-pedot-sim verify --config configs/example_verify.json --campaign-id verification_v3 --output-base data
+pedot-sim verify --config configs/example_verify.json --campaign-id verification_v4 --mesh-sizes 100 200 400 --output-base data
 ```
 
-Stage A imposes `J=kC` independently of voltage. B adds phenomenological field enhancement; C adds species migration (neutral EDOT defaults to charge zero); D uses a floating signed Butler–Volmer proxy and anodic deposition. These stages describe the **legacy floating-strip setup**, not directly driven wires. They omit explicit cathodic chemistry and growing geometry. The default strip verification case is stiff and has previously failed mesh tolerance: inspect the saved verification summary rather than treating successful execution as scientific accuracy.
+Stage A imposes `J=kC` independently of voltage. B adds phenomenological field enhancement; C adds species migration (neutral EDOT defaults to charge zero); D uses a floating signed Butler–Volmer proxy and anodic deposition. These stages describe the **legacy floating-strip setup**, not directly driven wires. They omit explicit cathodic chemistry and growing geometry. The supplied stiff Stage A verification case uses a boundary-fitted graded mesh (`mesh_stretch=10`) and passes the unchanged 5% tolerance at the documented levels. Inspect the saved verification summary; this numerical result does not establish validity for other stages or experiments.
 
-Transport uses masked theta diffusion, upwind migration and local implicit consumption. Backward Euler (`implicit_theta=1`) is the default; theta=0.5 requests Crank–Nicolson. The coupled splitting is first order. Waveform-dependent runs use at least 40 steps per period and include pulse/rest transitions as endpoints. Midpoint drive sampling and a final partial step prevent phase/end-time mistakes. `adaptive_dt=true` is rejected; `cfl_safety` controls migration substeps.
+Transport couples masked theta diffusion and implicit consumption in one solve, followed by upwind migration. Backward Euler (`implicit_theta=1`) is the default; theta=0.5 requests Crank–Nicolson. The coupled splitting is first order. Waveform-dependent runs use at least 40 steps per period and include pulse/rest transitions as endpoints. Midpoint drive sampling and a final partial step prevent phase/end-time mistakes. `adaptive_dt=true` is rejected; `cfl_safety` controls migration substeps.
 
 The dry neutral repeat mass defaults to 0.14016 kg/mol; film density 1340 kg/m³ and deposition efficiency 1 are configurable **assumptions**. Every run checks consumed monomer, net reservoir exchange and retained film mass. Outputs include `research_audit.json`, an always-saved `final_state.npz`, thickness CV, signed left/right imbalance, dimensioned mass/charge proxies and electrolyte-only ohmic energy. Extensive quantities are **per metre of out-of-plane depth**. They are not measured cell current, total process energy or experimentally established yield. `save_fields` controls snapshot archives; final state and diagnostics remain available.
 
@@ -73,6 +83,20 @@ pedot-sim validate --simulation data/simulated_raw/strip_v3/one/timeseries.csv -
 The shown threshold is illustrative, not a scientific acceptance criterion. Set it before comparison based on the experiment and its uncertainty. Profiles use `x,h` [m,m]; explicit current traces use `t,I` [s,A], and separately split monotonic CV branches use `V,I` [V,A]. Molar flux cannot be silently converted to amperes. The direct-wire model's lattice results need a justified physical mapping before quantitative measurement comparison.
 
 Reports retain error metrics, source metadata and input hashes; nonfinite values and extrapolation are rejected. A comparison without a threshold is marked `not_assessed`. A dataset-specific pass is not universal model validation. Keep calibration and validation measurements separate.
+
+## Analyze measured manufacturing data
+
+```sh
+pedot-sim analyze-manufacturing --trace measurements/electrical.csv --metadata measurements/process.json --output-dir data/measured_process
+```
+
+CSV columns are `time_s,voltage_V,current_A`. Metadata requires a source identifier and explicit units:
+
+```json
+{"source":"Your experiment ID", "units":{"time_s":"s","voltage_V":"V","current_A":"A"}}
+```
+
+Optional metadata fields are `dry_product_mass_kg`, `initial_monomer_mass_kg`, `film_area_m2`, `mean_thickness_m`, `four_terminal_resistance_ohm`, `voltage_probe_spacing_m`, `conducting_width_m` and `frequency_Hz`. Supply only independently measured quantities. Outputs include net/imported/returned terminal energy and charge; optional inputs enable specific energy, mass ratio, effective density and rectangular-film conductivity calculations. Irregular dendrites require their own electrical geometry model. The source files are hashed and assumptions accompany the HTML/CSV/JSON reports. No physical measurement dataset is invented or bundled.
 
 ## Optional output and license
 

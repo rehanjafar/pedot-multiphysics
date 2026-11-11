@@ -1,6 +1,5 @@
 """Geometry feedback and aggregate-conservation tests for direct-wire growth."""
 import json
-from dataclasses import asdict
 import numpy as np
 import pytest
 from pedot_sim.dendrites import (DendriteConfig, initial_electrodes,

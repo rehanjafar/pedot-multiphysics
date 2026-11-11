@@ -17,7 +17,7 @@ import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -29,7 +29,6 @@ from pedot_sim.metrics import (
     anisotropy_index,
     compute_all_metrics,
     depletion_depth,
-    timescale_ratio,
     uniformity_index,
 )
 from pedot_sim.nucleation import NucleationModel
@@ -163,7 +162,7 @@ def _plot_thickness_evolution(
         ax.plot(
             electrode_x * 1e3,
             snap["h"] * 1e6,
-            label=f"t = {snap['time']:.1f} s",
+            label=f"t = {snap['time']:.3g} s",
         )
     ax.set_xlabel("x [mm]")
     ax.set_ylabel("Film thickness [um]")
@@ -232,15 +231,17 @@ def _plot_concentration_snapshots(
         snap = snapshots[idx]
         C_plot = snap["C"].copy()
         C_plot[~domain.domain_mask] = np.nan  # mask outside domain
-        im = ax.imshow(
-            C_plot,
-            extent=[0, domain.Lx * 1e3, 0, domain.Ly * 1e3],
-            origin="lower",
-            aspect="auto",
+        from .utils_grid import cell_widths
+        wx, wy = cell_widths(domain.grid)
+        xe = np.r_[domain.grid.x[0]-wx[0]/2, domain.grid.x+wx/2]
+        ye = np.r_[domain.grid.y[0]-wy[0]/2, domain.grid.y+wy/2]
+        im = ax.pcolormesh(
+            xe*1e3, ye*1e3, C_plot,
+            shading="flat",
             vmin=0,
             vmax=config.physics.C_bulk,
         )
-        ax.set_title(f"t = {snap['time']:.1f} s")
+        ax.set_title(f"t = {snap['time']:.3g} s")
         ax.set_xlabel("x [mm]")
         ax.set_ylabel("y [mm]")
 
@@ -278,6 +279,7 @@ def run_single(
         Metrics dictionary summarising the run outcome.  On failure the
         dict will contain ``"status": "failed"`` and an ``"error"`` key.
     """
+    from .utils_grid import electrode_weights, cell_widths
     from .research import process_diagnostics, ohmic_power_per_depth
     from .waveforms import integration_times
     from .config import validate_config
@@ -323,6 +325,7 @@ def run_single(
         domain = build_domain(config.geometry, config.numerical)
         grid = domain.grid
         electrode_x = get_electrode_x(domain)
+        weights = electrode_weights(grid, domain.electrode_mask)
 
         logger.info(
             "Domain: Lx=%.4f m, Ly=%.4f m, Nx=%d, Ny=%d",
@@ -405,10 +408,10 @@ def run_single(
             # Record timeseries
             record_ts = (step % ts_stride == 0) or (step in snapshot_indices) or step == n_steps-1
             if record_ts and n_electrode > 0:
-                mean_h_val = float(np.mean(h))
+                mean_h_val = float(np.average(h,weights=weights))
                 max_h_val = float(np.max(h))
-                ai = anisotropy_index(h)
-                ui = uniformity_index(h)
+                ai = anisotropy_index(h, weights)
+                ui = uniformity_index(h, weights)
                 dd = depletion_depth(
                     C, config.physics.C_bulk, grid, domain.electrode_mask,
                     domain_mask=domain.domain_mask
@@ -453,7 +456,7 @@ def run_single(
             domain_mask=domain.domain_mask,
         )
 
-        final_mean_h = float(np.mean(h)) if n_electrode > 0 else 0.0
+        final_mean_h = float(np.average(h,weights=weights)) if n_electrode > 0 else 0.0
         final_max_h = float(np.max(h)) if n_electrode > 0 else 0.0
 
         # Also compute tau_diff / tau_pulse for the user-facing metrics
@@ -488,9 +491,12 @@ def run_single(
             "timescale_ratio": all_metrics["timescale_ratio"],
             "diffusion_pulse_ratio": tsr,
             "physics_stage": config.physics.physics_stage,
+            "grid_cells_x": grid.Nx, "grid_cells_y": grid.Ny,
+            "minimum_dx": grid.dx, "minimum_dy": grid.dy,
+            "maximum_dx": float(max(cell_widths(grid)[0])), "maximum_dy": float(max(cell_widths(grid)[1])),
             "effective_dt": dt,
             "model_assumption": "weak-coupling fixed-domain approximation",
-            "mean_growth_rate": float(np.mean(h-initial_h)) / t_end,
+            "mean_growth_rate": float(np.average(h-initial_h,weights=weights)) / t_end,
             "total_charge_proxy": all_metrics["total_charge_proxy"],
             "roughness": all_metrics["roughness"],
         }
@@ -501,7 +507,8 @@ def run_single(
         save_json(audit, run_dir / "research_audit.json")
         # Final state is always saved even when snapshot output is disabled.
         save_npz({"h": h, "x": electrode_x, "C": C,
-                  "domain_mask": domain.domain_mask, "electrode_mask": domain.electrode_mask},
+                  "domain_mask": domain.domain_mask, "electrode_mask": domain.electrode_mask,
+                  "grid_x": grid.x, "grid_y": grid.y, "widths_x": cell_widths(grid)[0], "widths_y": cell_widths(grid)[1]},
                  run_dir / "final_state.npz")
 
         # ---- Persist outputs ---------------------------------------------

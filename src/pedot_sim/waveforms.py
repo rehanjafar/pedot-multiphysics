@@ -10,7 +10,7 @@ Feeder boundary conditions:
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from typing import Callable
 
 import numpy as np
 
@@ -57,7 +57,6 @@ def asymmetric_adc(
     Positive half-cycle is scaled by adc_ratio,
     negative half-cycle scaled by (1 - adc_ratio).
     """
-    phase = (t * freq) % 1.0
     sin_val = np.sin(2.0 * np.pi * freq * t)
     if isinstance(sin_val, np.ndarray):
         scale = np.where(sin_val >= 0, adc_ratio, 1.0 - adc_ratio)

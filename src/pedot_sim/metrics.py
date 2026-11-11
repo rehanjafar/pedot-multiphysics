@@ -16,11 +16,10 @@ from typing import Optional
 
 import numpy as np
 
-from . import constants as C
 from .utils_grid import Grid2D
 
 
-def anisotropy_index(h: np.ndarray) -> float:
+def anisotropy_index(h: np.ndarray, weights=None) -> float:
     """Anisotropy Index: AI = h_max / h_avg.
 
     AI = 1.0 for perfectly uniform film.
@@ -39,13 +38,13 @@ def anisotropy_index(h: np.ndarray) -> float:
     h_pos = h
     if len(h_pos) == 0:
         return 1.0
-    h_avg = np.mean(h_pos)
+    h_avg = np.average(h_pos, weights=weights)
     if h_avg == 0:
         return 1.0
     return float(np.max(h_pos) / h_avg)
 
 
-def uniformity_index(h: np.ndarray) -> float:
+def uniformity_index(h: np.ndarray, weights=None) -> float:
     """Uniformity Index: UI = std(h).
 
     UI = 0 for perfectly uniform film.
@@ -63,7 +62,7 @@ def uniformity_index(h: np.ndarray) -> float:
     """
     if len(h) == 0:
         return 0.0
-    return float(np.std(h))
+    return float(np.sqrt(np.average((h-np.average(h, weights=weights))**2, weights=weights)))
 
 
 def depletion_depth(
@@ -115,10 +114,11 @@ def depletion_depth(
                 break
             # Average concentration along x at this y-row
             C_row = C_field[j, cols]
-            C_mean = np.mean(C_row) if len(C_row) > 0 else C_bulk
+            from .utils_grid import cell_widths
+            C_mean = np.average(C_row, weights=cell_widths(grid)[0][cols]) if len(C_row) > 0 else C_bulk
             if C_mean >= C_threshold:
                 break
-            depth += grid.dy
+            depth = abs(grid.y[j]-grid.y[j_elec])
             j += direction
         max_depth = max(max_depth, depth)
 
@@ -264,8 +264,10 @@ def compute_all_metrics(
         Keys: AI, UI, depletion_depth, timescale_ratio,
               mean_growth_rate, total_charge_proxy, roughness.
     """
-    ai = anisotropy_index(h)
-    ui = uniformity_index(h)
+    from .utils_grid import electrode_weights
+    weights = electrode_weights(grid, electrode_mask)
+    ai = anisotropy_index(h, weights)
+    ui = uniformity_index(h, weights)
     dd = depletion_depth(C_field, C_bulk, grid, electrode_mask, domain_mask=domain_mask)
     tr = timescale_ratio(D, k_rxn, L_electrode)
 
@@ -277,7 +279,8 @@ def compute_all_metrics(
     if flux_history is not None and dt_array is not None:
         tcp = total_charge_proxy(flux_history, dt_array)
 
-    rough = roughness_metric(h, grid.dx)
+    positions = grid.X[electrode_mask]
+    rough = float(np.sum(np.abs(np.diff(h)))/(positions[-1]-positions[0])) if len(h)>1 else 0.
 
     return {
         "AI": ai,

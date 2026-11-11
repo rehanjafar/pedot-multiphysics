@@ -10,7 +10,7 @@ import json
 import copy
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from . import constants as C
 
@@ -82,6 +82,7 @@ class NumericalConfig:
     implicit_theta: float = 1.0  # positivity-preserving backward Euler by default
     laplace_tol: float = 1.0e-6  # Laplace solver tolerance
     laplace_max_iter: int = 10000  # Max iterations for Laplace solver
+    mesh_stretch: float = 0.0  # >0 enables boundary-fitted sinh grading
     adaptive_dt: bool = False  # Unsupported; True is explicitly rejected
     cfl_safety: float = 0.8  # Migration substep probability/CFL limit
 
@@ -170,6 +171,8 @@ def validate_config(config: SimConfig) -> None:
                         ("adaptive_dt", n.adaptive_dt)):
         if type(value) is not bool:
             raise ValueError(f"{name} must be a boolean")
+    if not 0 <= n.mesh_stretch <= 12:
+        raise ValueError("mesh_stretch must be between 0 and 12")
     if n.adaptive_dt:
         raise ValueError("adaptive_dt is not implemented; use timestep refinement")
     if n.dt <= 0 or n.t_end <= 0 or not 0 <= n.implicit_theta <= 1:

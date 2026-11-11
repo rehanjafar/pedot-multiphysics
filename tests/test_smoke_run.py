@@ -1,13 +1,11 @@
 """Smoke tests for end-to-end simulation runs."""
 
-import json
-from pathlib import Path
 
 import numpy as np
 import pytest
 
 from pedot_sim.config import SimConfig
-from pedot_sim.geometry import build_domain, get_electrode_x
+from pedot_sim.geometry import build_domain
 from pedot_sim.growth import evolve_one_timestep
 from pedot_sim.nucleation import NucleationModel
 from pedot_sim.runner_single import run_single
