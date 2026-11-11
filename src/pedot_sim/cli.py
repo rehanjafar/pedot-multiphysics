@@ -121,7 +121,7 @@ def _cmd_run_single(args: argparse.Namespace) -> int:
     print(f"\nRun completed in {elapsed:.1f}s")
     print(f"  Mean thickness  : {metrics.get('mean_h', 0):.4e} m")
     print(f"  Max thickness   : {metrics.get('max_h', 0):.4e} m")
-    print(f"  Asymmetry idx   : {metrics.get('AI', 0):.4f}")
+    print(f"  Peak/mean idx   : {metrics.get('AI', 0):.4f}")
     print(f"  Uniformity idx  : {metrics.get('UI', 0):.4f}")
     print(f"  Depletion depth : {metrics.get('depletion_depth', 0):.4e} m")
     print(f"  Timescale ratio : {metrics.get('timescale_ratio', 0):.2f}")
@@ -254,7 +254,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     # Run full statistical analysis
     try:
         from pedot_sim.analysis_stats import run_full_analysis
-        print("Running ANOVA + regression analysis...")
+        print("Checking design and running applicable analyses...")
         run_full_analysis(args.campaign_id, output_base)
         print("Statistical analysis complete.")
     except Exception as e:
@@ -274,6 +274,27 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     results_path = output_base / "simulated_agg" / args.campaign_id / "results.csv"
     print(f"\nResults saved to: {results_path}")
     return 0
+
+
+def _cmd_run_dendrite(args):
+    from .dendrites import load_dendrite_config, run_dendrite
+    result = run_dendrite(load_dendrite_config(args.config), args.run_id, args.output_base, args.campaign_id)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def _cmd_analyze_dendrites(args):
+    from .dendrites import analyze_dendrite_campaign
+    print(analyze_dendrite_campaign(args.campaign_id, args.output_base))
+    return 0
+
+
+def _cmd_validate(args):
+    from .validation import compare_measurements
+    result = compare_measurements(args.simulation, args.experiment, args.metadata,
+                                  args.output_dir, args.observable, args.max_rmse)
+    print(f"RMSE: {result['RMSE']}; acceptance: {result['acceptance']}")
+    return 1 if result["acceptance"] == "failed" else 0
 
 
 def _cmd_make_report(args: argparse.Namespace) -> int:
@@ -416,7 +437,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Campaign identifier",
     )
     p_batch.add_argument(
-        "--max-workers", type=int, default=4,
+        "--max-workers", type=int, default=None,
         help="Number of parallel worker processes (default: 4)",
     )
     p_batch.add_argument(
@@ -475,6 +496,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Root output directory (default: data)",
     )
 
+    p_validation = subparsers.add_parser("validate", help="Compare an explicit observable with traceable measurements")
+    for name in ("simulation", "experiment", "metadata", "output-dir"):
+        p_validation.add_argument("--"+name, type=Path, required=True)
+    p_validation.add_argument("--observable", choices=["thickness", "profile", "CA", "CV"], default="thickness")
+    p_validation.add_argument("--max-rmse", type=float, help="Acceptance threshold in observable SI units")
+    p_dendrite = subparsers.add_parser("run-dendrite", help="Simulate directly driven wire/aggregate growth (uncalibrated)")
+    p_dendrite.add_argument("--config", type=Path, required=True)
+    p_dendrite.add_argument("--run-id", required=True)
+    p_dendrite.add_argument("--campaign-id", default="dendrites")
+    p_dendrite.add_argument("--output-base", type=Path, default=Path("data"))
+    p_da = subparsers.add_parser("analyze-dendrites", help="Compare direct-wire morphology runs")
+    p_da.add_argument("--campaign-id", required=True)
+    p_da.add_argument("--output-base", type=Path, default=Path("data"))
     return parser
 
 
@@ -488,6 +522,9 @@ _COMMAND_DISPATCH = {
     "verify": _cmd_verify,
     "analyze": _cmd_analyze,
     "make-report": _cmd_make_report,
+    "validate": _cmd_validate,
+    "run-dendrite": _cmd_run_dendrite,
+    "analyze-dendrites": _cmd_analyze_dendrites,
 }
 
 

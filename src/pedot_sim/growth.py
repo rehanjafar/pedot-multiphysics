@@ -25,6 +25,7 @@ from .field import (
     compute_field_magnitude,
     get_overpotential_at_bpe,
     solve_laplace_2d,
+    fixed_domain_potential,
 )
 from .geometry import DomainInfo
 from .kinetics import butler_volmer_flux, flux_to_growth_rate
@@ -89,7 +90,7 @@ def evolve_one_timestep(
 
     # 1. Compute waveform at current time
     waveform_func = get_waveform(config.waveform)
-    V_applied = float(waveform_func(t))
+    V_applied = float(waveform_func(t + dt/2))
     V_left, V_right = get_boundary_potentials(V_applied)
 
     # 2. Solve electric field (Stage >= B)
@@ -98,18 +99,10 @@ def evolve_one_timestep(
     eta: Optional[np.ndarray] = None
 
     if stage in ("B", "C", "D"):
-        V_field, n_iter, residual = solve_laplace_2d(
-            grid=grid,
-            domain_mask=domain.domain_mask,
-            V_left=V_left,
-            V_right=V_right,
-            left_feeder=domain.left_feeder_mask,
-            right_feeder=domain.right_feeder_mask,
-            wall_mask=domain.wall_mask,
-            tol=config.numerical.laplace_tol,
-            max_iter=config.numerical.laplace_max_iter,
-            V_init=V_prev,
-        )
+        V_field, n_iter, residual = fixed_domain_potential(
+            domain, V_applied, config.numerical.laplace_tol,
+            config.numerical.laplace_max_iter,
+            abs(config.waveform.V_DC)+config.waveform.V_AC)
         if residual >= config.numerical.laplace_tol:
             raise RuntimeError("Laplace solver did not converge")
         Ex, Ey = compute_electric_field(V_field, grid, domain.domain_mask)
@@ -117,8 +110,6 @@ def evolve_one_timestep(
         solver_info["laplace_iters"] = n_iter
         solver_info["laplace_residual"] = residual
 
-        if stage == "D":
-            eta = get_overpotential_at_bpe(V_field, domain.electrode_mask, C, phy)
 
     # 4. Solve transport
     C_new = solve_diffusion_step(
@@ -145,11 +136,14 @@ def evolve_one_timestep(
             dt=dt,
             domain_mask=domain.domain_mask,
             T=phy.T,
+            cfl_safety=config.numerical.cfl_safety,
         )
         # Re-apply BCs
         C_new[domain.left_feeder_mask] = phy.C_bulk
         C_new[domain.right_feeder_mask] = phy.C_bulk
         C_new = np.maximum(C_new, 0.0)
+
+    transported_inventory = float(np.sum(C_new) * grid.dx * grid.dy)
 
     # One effective exposed interface per horizontal electrode cell:
     # area/volume = dx/(dx*dy) = 1/dy, per unit out-of-plane depth.
@@ -167,10 +161,15 @@ def evolve_one_timestep(
     R_field = np.zeros_like(C)
     R_field[domain.electrode_mask] = consumed / dt
     R_at_electrode = consumed * grid.dy / dt
-    dhdt = R_at_electrode * const.M_EDOT / const.RHO_PEDOT
+    dhdt = (R_at_electrode * phy.deposited_molar_mass
+            * phy.deposition_efficiency / phy.film_density)
     h_new = h + dt * dhdt
     if not np.isfinite(C_new).all() or not np.isfinite(h_new).all():
         raise ValueError("Nonfinite simulation state")
+
+    solver_info["reservoir_exchange_mol_per_m"] = transported_inventory - float(np.sum(C)*grid.dx*grid.dy)
+    solver_info["consumed_mol_per_m"] = float(np.sum(consumed)*grid.dx*grid.dy)
+    solver_info["applied_voltage_midpoint"] = V_applied
 
     # Compute flux diagnostics
     mean_flux = float(np.mean(R_at_electrode)) if len(R_at_electrode) > 0 else 0.0

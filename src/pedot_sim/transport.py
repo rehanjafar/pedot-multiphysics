@@ -84,7 +84,7 @@ def solve_diffusion_step(C, grid, D, dt, R_sink, domain_mask, C_bulk,
     return result
 
 
-def add_migration_flux(C, V, grid, D, z, dt, domain_mask, T=const.T_DEFAULT):
+def add_migration_flux(C, V, grid, D, z, dt, domain_mask, T=const.T_DEFAULT, cfl_safety=0.8):
     """Conservative upwind face flux, subcycled for positivity, insulated walls.
 
     This step has closed external faces; the orchestrator resets reservoir cells.
@@ -101,7 +101,7 @@ def add_migration_flux(C, V, grid, D, z, dt, domain_mask, T=const.T_DEFAULT):
         outgoing[a] += np.maximum(velocity, 0.) / spacing
         outgoing[b] += np.maximum(-velocity, 0.) / spacing
         faces.append((a, b, spacing, velocity))
-    n = max(1, int(np.ceil(dt * outgoing.max() / 0.8)))
+    n = max(1, int(np.ceil(dt * outgoing.max() / cfl_safety)))
     for _ in range(n):
         delta = np.zeros_like(C)
         for a, b, spacing, velocity in faces:
@@ -156,33 +156,17 @@ def compute_reaction_rate(
         if E_mag is not None:
             enhancement = 1.0 + beta * E_mag[electrode_mask]
         else:
-            enhancement = 1.0
+            raise ValueError("Stages B/C require the electric field")
         R[electrode_mask] = k * C[electrode_mask] * enhancement
 
     elif stage == "D":
-        # Butler-Volmer kinetics
-        if eta is not None:
-            j0 = config_physics.j0
-            alpha = config_physics.alpha
-            n = config_physics.n_electrons
-            T = config_physics.T
-            C_bulk = config_physics.C_bulk
-
-            C_elec = C[electrode_mask]
-            C_ratio = np.clip(C_elec / C_bulk, 0, None)
-
-            arg_a = alpha * n * const.F * eta / (const.R_GAS * T)
-            arg_c = -(1 - alpha) * n * const.F * eta / (const.R_GAS * T)
-            # Clip to prevent overflow
-            arg_a = np.clip(arg_a, -50, 50)
-            arg_c = np.clip(arg_c, -50, 50)
-
-            j = j0 * C_ratio * (np.exp(arg_a) - np.exp(arg_c))
-            # Anodic surface flux; growth.py applies face area/cell volume.
-            R_vals = np.maximum(j, 0.) / (n * const.F)
-            R[electrode_mask] = R_vals
-        else:
-            # Fallback to Stage A
-            R[electrode_mask] = k * C[electrode_mask]
-
+        if eta is None:
+            raise ValueError("Stage D requires electrode overpotential")
+        from .kinetics import butler_volmer_flux, flux_to_consumption_rate
+        j = butler_volmer_flux(eta, config_physics.j0, C[electrode_mask],
+                              config_physics.C_bulk, config_physics.alpha,
+                              config_physics.n_electrons, config_physics.T)
+        R[electrode_mask] = flux_to_consumption_rate(j, config_physics.n_electrons)
+    else:
+        raise ValueError(f"Unknown physics stage: {stage}")
     return R

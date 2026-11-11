@@ -28,31 +28,15 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Ensure canonical column names and derived columns exist.
-
-    Adds ``D_level`` (categorical) from numeric ``D`` column using
-    the predefined thresholds in ``constants.D_LEVELS``.
-    """
+    """Label only exact design levels; never bin continuous diffusion values."""
     df = df.copy()
-
-    # Derive D_level from numeric D if missing
-    if "D_level" not in df.columns and "D" in df.columns:
-        boundaries = sorted(D_LEVELS.values())  # [1e-10, 6.5e-10, 2e-9]
-        labels_map = {v: k for k, v in D_LEVELS.items()}
-
-        def _assign_level(d_val: float) -> str:
-            best_label = "mid"
-            best_dist = float("inf")
-            for d_ref, label in labels_map.items():
-                dist = abs(d_val - d_ref)
-                if dist < best_dist:
-                    best_dist = dist
-                    best_label = label
-            return best_label
-
-        df["D_level"] = df["D"].apply(_assign_level)
-
+    if "D_level" not in df and "D" in df:
+        df["D_level"] = df["D"].map({v: k for k, v in D_LEVELS.items()}).fillna("continuous")
     return df
+
+
+CONDITION_COLUMNS = ["frequency", "D", "bridge_width", "geometry", "V_DC", "V_AC",
+                     "waveform_type", "duty_cycle", "adc_ratio", "rest_fraction", "physics_stage", "t_end"]
 
 
 def run_anova(df: pd.DataFrame) -> dict:
@@ -82,6 +66,20 @@ def run_anova(df: pd.DataFrame) -> dict:
         raise ValueError("Factorial ANOVA requires multiple levels for all three factors")
     if len(df) <= df.groupby(["frequency", "D_level", "geometry"]).ngroups:
         raise ValueError("ANOVA requires replicated conditions, not a continuous dense sweep")
+    if "noise_enabled" not in df or not df["noise_enabled"].eq(True).all():
+        raise ValueError("ANOVA requires independent stochastic replicates; deterministic reruns are not replicates")
+    if (df["D_level"] == "continuous").any():
+        raise ValueError("Continuous sweeps are not categorical factorial experiments")
+    factors = ["frequency", "D_level", "geometry"]
+    groups = df.groupby(factors)
+    expected = np.prod([df[c].nunique() for c in factors])
+    if groups.ngroups != expected or groups.size().min() < 2:
+        raise ValueError("ANOVA requires a complete factorial design with >=2 replicates per condition")
+    for col in CONDITION_COLUMNS:
+        if col not in factors and col not in ("D", "bridge_width") and col in df and df[col].nunique() > 1:
+            raise ValueError(f"Unmodeled varying factor in factorial ANOVA: {col}")
+    if "seed" not in df or df["seed"].nunique() != len(df):
+        raise ValueError("Independent random seeds are required for every factorial run")
     results = {}
 
     # Ensure categorical
@@ -93,6 +91,10 @@ def run_anova(df: pd.DataFrame) -> dict:
     for dv in ["AI", "UI"]:
         if dv not in df.columns:
             continue
+        residual_ss = float(np.sum((df[dv]-groups[dv].transform("mean"))**2))
+        scale = max(float(np.sum(df[dv]**2)), np.finfo(float).tiny)
+        if residual_ss <= 1e-24*scale:
+            raise ValueError(f"{dv} has no estimable within-condition variance")
         formula = f"{dv} ~ C(freq_cat) * C(D_cat) * C(geom_cat)"
         try:
             model = ols(formula, data=df).fit()
@@ -110,68 +112,70 @@ def run_anova(df: pd.DataFrame) -> dict:
 
 
 def run_regression(df: pd.DataFrame) -> dict:
-    """Run multiple linear regression for AI and UI.
+    """Descriptive standardized linear surrogate; no causal or validation claim.
 
-    Includes polynomial terms for frequency and D.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-
-    Returns
-    -------
-    dict
-        Regression model summaries and coefficients.
+    Uses actual numeric bridge width and voltage parameters, excludes constants,
+    rejects confounding/rank deficiency and reports leave-one-condition-out RMSE.
+    Inferential p-values from simulation surrogates are deliberately not emitted.
     """
-    try:
-        import statsmodels.api as sm
-    except ImportError:
-        logger.warning("statsmodels not available, skipping regression")
-        return {}
-
-    results = {}
-    df = df.copy()
-
-    # Create numeric features
-    df["log_freq"] = np.log10(df["frequency"].clip(lower=0.1))
-    df["log_D"] = np.log10(df["D"].clip(lower=1e-12))
-    df["geom_num"] = (df["geometry"] == "wide").astype(float)
-    df["log_freq_sq"] = df["log_freq"] ** 2
-    df["log_D_sq"] = df["log_D"] ** 2
-    df["freq_D_interaction"] = df["log_freq"] * df["log_D"]
-
-    features = ["log_freq", "log_D", "geom_num", "log_freq_sq", "log_D_sq", "freq_D_interaction"]
-    X = sm.add_constant(df[features].values)
+    features = pd.DataFrame(index=df.index)
+    for name in ("frequency", "D", "bridge_width", "V_DC", "V_AC"):
+        if name not in df or df[name].nunique() < 2:
+            continue
+        values = df[name].astype(float)
+        if not np.isfinite(values).all():
+            raise ValueError("Regression inputs must be finite")
+        if name in ("frequency", "D"):
+            if (values <= 0).any():
+                raise ValueError("Log predictors require positive frequency and D")
+            features["log10_"+name] = np.log10(values)
+        else:
+            features[name] = values
+    if features.empty:
+        raise ValueError("No varying regression predictors")
+    means, scales = features.mean(), features.std(ddof=0)
+    X = np.column_stack([np.ones(len(df)), ((features-means)/scales).to_numpy()])
     if len(df) <= X.shape[1] or np.linalg.matrix_rank(X) != X.shape[1]:
         raise ValueError("Regression requires a full rank design and residual degrees of freedom")
-    feature_names = ["const"] + features
-
-    for dv in ["AI", "UI"]:
-        if dv not in df.columns:
+    names = ["const"]+list(features.columns)
+    conditions = features.astype(str).agg("|".join, axis=1).to_numpy()
+    results = {"predictor_scaling": {name: {"mean": float(means[name]), "std": float(scales[name])} for name in features}}
+    for dv in ("AI", "UI", "mean_h", "mean_growth_rate"):
+        if dv not in df:
             continue
-        y = df[dv].values
-        try:
-            model = sm.OLS(y, X).fit()
-            results[f"{dv}_regression"] = model
-            results[f"{dv}_coefficients"] = dict(zip(feature_names, model.params))
-            results[f"{dv}_r_squared"] = model.rsquared
-            results[f"{dv}_summary"] = model.summary().as_text()
-            logger.info("Regression for %s: R² = %.4f", dv, model.rsquared)
-        except Exception as e:
-            logger.error("Regression failed for %s: %s", dv, e)
-
+        y = df[dv].to_numpy(float)
+        if not np.isfinite(y).all():
+            raise ValueError("Regression outcomes must be finite")
+        coefficients = np.linalg.lstsq(X, y, rcond=None)[0]
+        residuals = X@coefficients-y
+        ss = float(np.sum((y-y.mean())**2))
+        r2 = 1-float(residuals@residuals)/ss if ss>0 else None
+        held_out = np.full(len(y), np.nan)
+        for condition in np.unique(conditions):
+            test = conditions == condition
+            train = ~test
+            if train.sum() > X.shape[1] and np.linalg.matrix_rank(X[train]) == X.shape[1]:
+                beta = np.linalg.lstsq(X[train], y[train], rcond=None)[0]
+                held_out[test] = X[test]@beta
+        cv_rmse = float(np.sqrt(np.mean((held_out-y)**2))) if np.isfinite(held_out).all() else None
+        results[dv+"_coefficients"] = dict(zip(names, map(float, coefficients)))
+        results[dv+"_r_squared"] = r2
+        results[dv+"_cv_rmse"] = cv_rmse
+        results[dv+"_summary"] = (f"Descriptive linear surrogate; standardized predictors. R2={r2}; "
+            f"leave-one-condition-out RMSE={cv_rmse}. Coefficients are conditional associations, "
+            "not causal sensitivities. Cross-validation uses simulation data, not experiments.")
     return results
 
 
 def compute_descriptive_stats(df: pd.DataFrame) -> pd.DataFrame:
     """Compute mean and std of DVs per unique condition."""
-    group_cols = [c for c in ["frequency", "D_level", "geometry"] if c in df.columns]
-    dv_cols = [c for c in ["AI", "UI", "depletion_depth", "timescale_ratio", "mean_growth_rate"]
+    group_cols = [c for c in CONDITION_COLUMNS if c in df.columns]
+    dv_cols = [c for c in ["AI", "UI", "mean_h", "depletion_depth", "mean_growth_rate", "thickness_cv", "deposited_mass_kg_per_m", "electrolyte_ohmic_energy_J_per_m"]
                if c in df.columns]
     if not group_cols or not dv_cols:
         return pd.DataFrame()
 
-    stats = df.groupby(group_cols)[dv_cols].agg(["mean", "std"]).reset_index()
+    stats = df.groupby(group_cols)[dv_cols].agg(["count", "mean", "std", "min", "max"]).reset_index()
     stats.columns = ["_".join(c).strip("_") for c in stats.columns]
     return stats
 
@@ -349,8 +353,8 @@ def plot_sensitivity_tornado(regression_results: dict, save_dir: Path, dpi: int 
         colors = ["steelblue" if v > 0 else "coral" for v in values]
         ax.barh(names, values, color=colors)
         ax.axvline(0, color="k", linewidth=0.5)
-        ax.set_xlabel("Coefficient")
-        ax.set_title(f"Sensitivity Analysis - {dv}")
+        ax.set_xlabel("Outcome change per predictor standard deviation")
+        ax.set_title(f"Descriptive standardized associations - {dv}")
         plt.tight_layout()
         fig.savefig(save_dir / f"sensitivity_tornado_{dv.lower()}.png", dpi=dpi)
         plt.close(fig)
@@ -415,46 +419,37 @@ def plot_main_effects(df: pd.DataFrame, save_dir: Path, dpi: int = 300) -> None:
         plt.close(fig)
 
 
-def run_full_analysis(campaign_id: str, output_base: Path) -> None:
-    """Orchestrate full statistical analysis for a campaign."""
+def run_full_analysis(campaign_id: str, output_base: Path) -> dict:
+    """Analyze any campaign; record why an inferential method is inapplicable."""
+    from .utils_io import validate_id
+    validate_id(campaign_id)
     output_base = Path(output_base)
     campaign_dir = output_base / "simulated_agg" / campaign_id
-    results_path = campaign_dir / "results.csv"
-
-    if not results_path.exists():
-        logger.error("Results file not found: %s", results_path)
-        return
-
-    df = _normalize_columns(pd.read_csv(results_path))
-    logger.info("Loaded %d rows from %s", len(df), results_path)
-
+    df = _normalize_columns(pd.read_csv(campaign_dir / "results.csv"))
+    if df.empty:
+        raise ValueError("No completed runs to analyze")
+    for col in ("AI", "UI", "mean_h", "frequency", "D"):
+        if col not in df or not np.isfinite(df[col]).all():
+            raise ValueError(f"Missing/nonfinite analysis data: {col}")
     fig_dir = ensure_dir(output_base / "reports" / campaign_id / "figures")
-
-    # Descriptive statistics
-    desc = compute_descriptive_stats(df)
-    if not desc.empty:
-        save_csv(desc, campaign_dir / "descriptive_stats.csv")
-
-    # ANOVA
-    anova_results = run_anova(df)
-    save_anova_results(anova_results, campaign_dir)
-
-    # Regression
-    regression_results = run_regression(df)
-    save_regression_results(regression_results, campaign_dir)
-
-    # Plots
-    try:
-        plot_ai_vs_frequency(df, fig_dir)
-        plot_ui_vs_frequency(df, fig_dir)
-        plot_heatmap_ai(df, fig_dir)
-        plot_heatmap_ui(df, fig_dir)
-        plot_response_surface(df, "AI", fig_dir)
-        plot_response_surface(df, "UI", fig_dir)
-        plot_main_effects(df, fig_dir)
-        plot_sensitivity_tornado(regression_results, fig_dir)
-        plot_scatter_3d_params(df, fig_dir)
-    except Exception as e:
-        logger.error("Plot generation failed: %s", e)
-
-    logger.info("Full analysis complete for campaign %s", campaign_id)
+    save_csv(compute_descriptive_stats(df), campaign_dir / "descriptive_stats.csv")
+    decisions = {"interpretation": "Exploratory simulation comparisons; no empirical validation or manufacturing optimum established."}
+    for name, compute, save in (("anova", run_anova, save_anova_results),
+                                ("regression", run_regression, save_regression_results)):
+        # Delete stale results when re-analysis makes a method inapplicable.
+        for stale in campaign_dir.glob("*"):
+            if name in stale.name and stale.suffix in (".csv", ".txt", ".json"):
+                stale.unlink()
+        try:
+            result = compute(df)
+            save(result, campaign_dir)
+            decisions[name] = {"status": "computed"}
+            if name == "regression":
+                save_json(result, campaign_dir / "regression_diagnostics.json")
+                plot_sensitivity_tornado(result, fig_dir)
+        except ValueError as exc:
+            decisions[name] = {"status": "not_applicable", "reason": str(exc)}
+    # Scatter displays individual continuous designs without invented categories.
+    plot_scatter_3d_params(df, fig_dir, dpi=150)
+    save_json(decisions, campaign_dir / "analysis_decisions.json")
+    return decisions

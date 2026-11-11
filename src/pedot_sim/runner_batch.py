@@ -153,7 +153,7 @@ def generate_factorial_runs(
             D=d_val,
             bridge_width=bw,
             geometry_type=g_label,
-            seed=base_seed + rep,
+            seed=base_seed + len(runs),
         )
         runs.append((run_id, run_cfg))
 
@@ -169,7 +169,7 @@ def generate_dense_runs(
     config: SimConfig,
     n_runs: int = 500,
     sampling: str = "latin_hypercube",
-    seed: int = 0,
+    seed: Optional[int] = None,
     freq_range: Optional[Tuple[float, float]] = None,
     D_range: Optional[Tuple[float, float]] = None,
     bw_range: Optional[Tuple[float, float]] = None,
@@ -193,52 +193,45 @@ def generate_dense_runs(
     -------
     list of (run_id, SimConfig)
     """
+    if type(n_runs) is not int or n_runs < 1:
+        raise ValueError("n_runs must be a positive integer")
+    seed = config.nucleation.seed if seed is None else seed
     bc = config.batch
-    if freq_range is None:
-        freq_range = tuple(bc.freq_range) if bc.freq_range else (0.5, 200.0)
-    if D_range is None:
-        D_range = tuple(bc.D_range) if bc.D_range else (5e-11, 5e-9)
-    if bw_range is None:
-        bw_range = (0.001, 0.008)
-
+    freq_range = freq_range or tuple(bc.freq_range)
+    D_range = D_range or tuple(bc.D_range)
+    bw_range = bw_range or (0.001, min(.008, config.geometry.compartment_height))
+    ranges = [freq_range, D_range, bw_range, bc.V_DC_range, bc.V_AC_range]
+    for low, high in ranges:
+        if not np.isfinite([low, high]).all() or low >= high:
+            raise ValueError("Dense ranges must have finite increasing bounds")
+    if min(freq_range[0], D_range[0], bw_range[0]) <= 0:
+        raise ValueError("Frequency, D and width must be positive")
     rng = np.random.default_rng(seed)
-
     if sampling == "grid":
-        n_per_dim = max(2, int(round(n_runs ** (1.0 / 3.0))))
-        freqs = np.linspace(freq_range[0], freq_range[1], n_per_dim)
-        Ds = np.logspace(np.log10(D_range[0]), np.log10(D_range[1]), n_per_dim)
-        bws = np.linspace(bw_range[0], bw_range[1], n_per_dim)
-        points = np.array(list(product(freqs, Ds, bws)))
-
-    elif sampling == "random":
-        freqs = rng.uniform(freq_range[0], freq_range[1], n_runs)
-        Ds = 10 ** rng.uniform(np.log10(D_range[0]), np.log10(D_range[1]), n_runs)
-        bws = rng.uniform(bw_range[0], bw_range[1], n_runs)
-        points = np.column_stack([freqs, Ds, bws])
-
-    elif sampling == "latin_hypercube":
-        points = _latin_hypercube_3d(n_runs, freq_range, D_range, bw_range, rng)
-
+        # Three-dimensional grid; waveform amplitudes stay at their configured values.
+        count = max(2, int(round(n_runs**(1/3))))
+        points = np.array(list(product(np.linspace(*freq_range, count),
+            np.geomspace(*D_range, count), np.linspace(*bw_range, count))))
+        points = np.column_stack([points, np.full(len(points), config.waveform.V_DC),
+                                  np.full(len(points), config.waveform.V_AC)])
     else:
-        raise ValueError(f"Unknown sampling strategy: {sampling!r}")
-
-    runs: List[Tuple[str, SimConfig]] = []
-    for i, (f_val, d_val, bw_val) in enumerate(points):
-        run_id = f"dense_{i:04d}"
-        g_type = "narrow" if bw_val <= 0.003 else "wide"
-        run_cfg = _override_config(
-            config,
-            frequency=float(f_val),
-            D=float(d_val),
-            bridge_width=float(bw_val),
-            geometry_type=g_type,
-            seed=seed + i,
-        )
-        run_cfg.waveform.V_DC = float(rng.uniform(*bc.V_DC_range))
-        run_cfg.waveform.V_AC = float(rng.uniform(*bc.V_AC_range))
-        runs.append((run_id, run_cfg))
-
-    logger.info("Generated %d dense runs (sampling=%s)", len(runs), sampling)
+        if sampling in ("latin_hypercube", "lhs"):
+            from scipy.stats import qmc
+            unit = qmc.LatinHypercube(d=5, seed=seed).random(n_runs)
+        elif sampling == "random":
+            unit = rng.random((n_runs, 5))
+        else:
+            raise ValueError(f"Unknown sampling strategy: {sampling}")
+        low = np.array([r[0] for r in ranges]); high = np.array([r[1] for r in ranges])
+        low[1], high[1] = np.log10(low[1]), np.log10(high[1])
+        points = low+unit*(high-low)
+        points[:, 1] = 10**points[:, 1]
+    runs = []
+    for i, (freq, diffusion, width, dc, ac) in enumerate(points):
+        cfg = _override_config(config, frequency=float(freq), D=float(diffusion),
+                               bridge_width=float(width), geometry_type="custom", seed=seed+i)
+        cfg.waveform.V_DC, cfg.waveform.V_AC = float(dc), float(ac)
+        runs.append((f"dense_{i:04d}", cfg))
     return runs
 
 
@@ -347,7 +340,7 @@ def run_batch(
     config: SimConfig,
     campaign_id: str,
     output_base: Optional[Path] = None,
-    max_workers: int = 4,
+    max_workers: Optional[int] = None,
     sweep: str = "factorial",
     n_dense: Optional[int] = None,
     dense_sampling: Optional[str] = None,
@@ -379,10 +372,11 @@ def run_batch(
     from .config import validate_config
     from .utils_io import validate_id
     validate_config(config); validate_id(campaign_id)
-    if max_workers < 1:
+    max_workers = config.batch.max_workers if max_workers is None else max_workers
+    if type(max_workers) is not int or max_workers < 1:
         raise ValueError("max_workers must be positive")
     n_dense = config.batch.n_dense_samples if n_dense is None else n_dense
-    dense_sampling = dense_sampling or {"lhs": "latin_hypercube", "dense": "latin_hypercube"}.get(config.batch.sweep_type, config.batch.sweep_type)
+    dense_sampling = dense_sampling or {"lhs": "latin_hypercube", "dense": "latin_hypercube", "factorial": "latin_hypercube"}.get(config.batch.sweep_type, config.batch.sweep_type)
     if n_dense < 1:
         raise ValueError("n_dense must be positive")
     if output_base is None:
@@ -412,6 +406,12 @@ def run_batch(
     provenance_path = campaign_dir / "provenance.json"
     if provenance_path.exists() and load_json(provenance_path) != provenance:
         raise ValueError("Campaign configuration/source changed; choose a new campaign ID")
+    raw_dir = output_base / "simulated_raw" / campaign_id
+    planned = {rid for rid, _ in runs}
+    if raw_dir.exists():
+        unplanned = {d.name for d in raw_dir.iterdir() if d.is_dir()} - planned
+        if unplanned or not provenance_path.exists():
+            raise ValueError("Existing campaign outputs do not match this design/provenance; choose a new ID")
     save_json(provenance, provenance_path)
     manifest = RunManifest(campaign_dir)
     for rid in manifest.completed:

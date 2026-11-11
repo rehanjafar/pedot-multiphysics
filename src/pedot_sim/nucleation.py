@@ -1,14 +1,7 @@
-"""
-Stochastic nucleation model for PEDOT film formation.
+"""Uncalibrated Poisson multiplier for heterogeneous surface reaction.
 
-Based on the liquid-to-solid phase transformation observed by
-Subramanian and Martin (Macromolecules 2021; Nano Lett. 2021):
-- Liquid oligomer droplets form at the electrode surface
-- Droplets nucleate, diffuse, and merge into polymer nodules
-- Modeled as Poisson-distributed nucleation events with small
-  thickness perturbations
-
-All randomness uses numpy.random.default_rng(seed) for determinism.
+This does not reproduce a published droplet/nucleation mechanism. It changes
+requested reaction rates while retaining material accounting in growth.py.
 """
 
 from __future__ import annotations
@@ -42,15 +35,9 @@ class NucleationModel:
         Returns
         -------
         h0 : np.ndarray, shape (n_electrode,)
-            Initial film thickness [m] with small random perturbation.
+            Zero initial film thickness [m]; no source of free polymer mass.
         """
-        if not self.enabled:
-            return np.zeros(self.n_electrode)
-
-        amp = self.config.noise_amplitude
-        # Small uniform perturbation
-        h0 = amp * self.rng.uniform(0, 1, size=self.n_electrode)
-        return np.zeros(self.n_electrode)  # nuclei do not supply polymer mass
+        return np.zeros(self.n_electrode)
 
     def add_nucleation_noise(
         self,

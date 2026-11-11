@@ -1,7 +1,16 @@
-# Experimental comparison
+# Experimental data
 
-No experimental measurements are included.
+No measured datasets are included. Synthetic test fixtures are only software tests.
 
-The Python function `pedot_sim.validation.run_validation` accepts simulation and experimental CSV paths. Both must contain t [s], I [A] for CA or V [V], I [A] for individually aligned, monotonic CV branches. Simulation `time` is accepted as an alias for t. Native molar `flux` is deliberately not renamed to current: a justified charge/geometry/observable conversion is needed first. CV cycles must be split into branches; extrapolation outside the simulated range is rejected.
+For `pedot-sim validate`, provide a CSV and JSON metadata with a source identifier
+and exact SI unit declarations. Thickness: `time,mean_h` [s,m]; profile: `x,h` [m,m];
+CA: `t,I` [s,A]; CV: `V,I` [V,A] after separating monotonic scan branches.
+Record instrument, chemistry, electrode geometry, waveform convention, sample
+identity, replicate, uncertainty and calibration/validation partition in metadata.
 
-The returned report contains `status: failed` and an explanation on failure. There is no `pedot-sim validate` CLI command. Agreement with a toy or synthetic CSV is not experimental validation.
+The directly driven wire model currently reports lattice cells and model steps.
+Do not label those quantities metres or seconds without a calibrated mapping.
+For morphology validation, retain original scaled micrographs/time sequences and
+use the same segmentation for simulated and measured projected structures.
+
+See ../../docs/SCIENTIFIC_BASIS.md for the evidence and validation protocol.

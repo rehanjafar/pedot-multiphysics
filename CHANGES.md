@@ -31,3 +31,31 @@ Still outside the claims of this prototype:
 - Production-size campaigns, optional PyVista/ffmpeg/PDF validation, dependency CVE auditing and cross-version CI execution (workflow added, not executed locally).
 
 These limitations are explicit in the README and generated reports. Passing the test suite does not make the scientific model experimentally validated.
+
+## 0.2.0 — direct-wire research model and expanded verification
+
+Research target clarified as directly driven gold wires, rather than floating
+bipolar electrodes. Added an independent charged-aggregate lattice model with
+conducting growth, repeated Laplace solutions, seeded drift/diffusion, aggregate
+conservation, attachment activation and termination at electrical contact.
+Added direct-wire campaign reports. Lattice cells/model steps have no calibrated
+physical mapping; no empirical accuracy or universal manufacturing optimum is claimed.
+
+Corrected overpotential sign and neutral repeat mass; exposed assumed film
+density and retention efficiency. Added full material accounts, fixed-strip
+electrolyte heating diagnostics, resolution warnings and research audits.
+Waveform steps include pulse/rest transitions. Dense Latin hypercubes now cover
+all five sampled factors; statistical analyses distinguish valid stochastic
+factorials, continuous designs and deterministic repeats. Added source/units/hash
+provenance for experimental comparisons and runtime source/dependency fingerprints.
+
+JSON/manifest writes are atomic, runs claim their directories exclusively and
+escaping symlinks are rejected. CI pins reviewed action revisions and Ubuntu
+22.04, with Python 3.9/3.12/3.14 tested independently. Added primary-source
+scientific documentation and explicit unsupported manufacturing properties.
+
+Validation at implementation: 174 tests passed locally (previous PR: 68), with
+68% overall statement coverage and 90%+ in the principal growth/transport/field
+modules and direct-wire model. Source/wheel builds and direct-wire CLI/report
+workflow succeeded. Numerical refinement and empirical validation remain separate
+requirements; consult generated verification summaries and research audits.

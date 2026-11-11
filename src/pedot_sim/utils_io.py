@@ -39,8 +39,28 @@ def save_json(data: dict, path: Path) -> None:
             return str(obj)
         raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2, default=_default)
+    import os
+    import tempfile
+    def clean(obj):
+        if isinstance(obj, dict):
+            return {k: clean(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple, np.ndarray)):
+            return [clean(v) for v in obj]
+        if isinstance(obj, (float, np.floating)) and not np.isfinite(obj):
+            return None
+        return obj
+    # Replace atomically so interrupted writes cannot corrupt the resume manifest.
+    payload = json.dumps(clean(data), indent=2, default=_default, allow_nan=False)
+    handle = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=".pedot-", delete=False)
+    try:
+        with handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(handle.name, path)
+    finally:
+        Path(handle.name).unlink(missing_ok=True)
 
 
 def load_json(path: Path) -> dict:
@@ -71,17 +91,17 @@ def save_csv(df: pd.DataFrame, path: Path) -> None:
 
 def get_run_dir(base: Path, campaign_id: str, run_id: str) -> Path:
     """Get the output directory for a specific run."""
-    return ensure_dir(Path(base) / "simulated_raw" / campaign_id / run_id)
+    return ensure_dir(safe_output_path(base, "simulated_raw", campaign_id, run_id))
 
 
 def get_campaign_dir(base: Path, campaign_id: str) -> Path:
     """Get the aggregated output directory for a campaign."""
-    return ensure_dir(Path(base) / "simulated_agg" / campaign_id)
+    return ensure_dir(safe_output_path(base, "simulated_agg", campaign_id))
 
 
 def get_report_dir(base: Path, campaign_id: str) -> Path:
     """Get the report directory for a campaign."""
-    return ensure_dir(Path(base) / "reports" / campaign_id)
+    return ensure_dir(safe_output_path(base, "reports", campaign_id))
 
 
 def save_metadata(
@@ -148,3 +168,28 @@ def validate_id(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value) or ".." in value:
         raise ValueError("IDs must be safe names containing letters, digits, _, - or .")
     return value
+
+
+def safe_output_path(base, *parts):
+    """Reject unsafe identifiers and symlinks escaping the chosen output root."""
+    root = Path(base).resolve()
+    for part in parts:
+        validate_id(part)
+    path = root.joinpath(*parts)
+    try:
+        path.resolve().relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Output path escapes the selected root through a symlink") from exc
+    return path
+
+
+def runtime_provenance():
+    """Fingerprint actual local sources and scientific dependency versions."""
+    import hashlib
+    from importlib.metadata import version
+    digest = hashlib.sha256()
+    for file in sorted(Path(__file__).parent.glob("*.py")):
+        digest.update(file.name.encode())
+        digest.update(file.read_bytes())
+    return {"source_sha256": digest.hexdigest(), "python": platform.python_version(),
+            "packages": {name: version(name) for name in ("numpy", "scipy", "pandas", "matplotlib", "statsmodels", "jinja2")}}

@@ -10,3 +10,6 @@ data/simulated_raw/
 data/simulated_agg/
 data/verification/
 data/reports/
+data/dendrites/
+data/comparisons/
+coverage.xml

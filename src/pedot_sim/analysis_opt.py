@@ -4,7 +4,7 @@ Optimization and Pareto front analysis.
 Defines multi-objective optimization:
 - Minimize UI (uniformity)
 - Control AI (target range)
-- Maximize surface area (roughness proxy)
+- Optional profile-slope preference (not electrochemical surface area)
 
 Computes Pareto front and identifies best conditions.
 """
@@ -26,31 +26,14 @@ from .utils_io import ensure_dir, save_csv, save_json
 logger = logging.getLogger(__name__)
 
 
-def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Ensure D_level column exists (derived from numeric D)."""
-    df = df.copy()
-    if "D_level" not in df.columns and "D" in df.columns:
-        labels_map = {v: k for k, v in D_LEVELS.items()}
-
-        def _assign_level(d_val: float) -> str:
-            best_label = "mid"
-            best_dist = float("inf")
-            for d_ref, label in labels_map.items():
-                dist = abs(d_val - d_ref)
-                if dist < best_dist:
-                    best_dist = dist
-                    best_label = label
-            return best_label
-
-        df["D_level"] = df["D"].apply(_assign_level)
-    return df
+from .analysis_stats import _normalize_columns
 
 
 def compute_objective_scores(
     df: pd.DataFrame,
     w_uniformity: float = 0.5,
     w_anisotropy: float = 0.3,
-    w_roughness: float = 0.2,
+    w_roughness: float = 0.0,
     ai_target: float = 1.0,
 ) -> pd.DataFrame:
     """Add normalized objective scores to results.
@@ -72,8 +55,10 @@ def compute_objective_scores(
     pd.DataFrame
         With added 'score' column.
     """
+    if not all(np.isfinite(v) and v >= 0 for v in (w_uniformity, w_anisotropy, w_roughness)) or w_uniformity+w_anisotropy+w_roughness == 0:
+        raise ValueError("Objective weights must be finite, nonnegative, and have positive sum")
     df = df.copy()
-    required = [c for c in ("AI", "UI", "mean_growth_rate") if c in df]
+    required = [c for c in ("AI", "UI", "mean_growth_rate", "mean_h", "roughness") if c in df]
     if required and not np.isfinite(df[required].values).all():
         raise ValueError("Optimization requires finite metrics")
     if "mean_h" in df:
@@ -96,7 +81,7 @@ def compute_objective_scores(
     else:
         df["AI_score"] = 1.0
 
-    # Roughness (higher can be better for surface area)
+    # Optional arbitrary profile-slope preference, disabled by default.
     if "roughness" in df.columns and df["roughness"].max() > 0:
         df["roughness_score"] = df["roughness"] / df["roughness"].max()
     else:
@@ -140,6 +125,8 @@ def compute_pareto_front(
         return pd.DataFrame()
 
     df = df.copy()
+    if not np.isfinite(df[[obj1, obj2]].to_numpy()).all():
+        raise ValueError("Pareto objectives must be finite")
     # Convert to minimization
     v1 = df[obj1].values.copy()
     v2 = df[obj2].values.copy()
@@ -221,6 +208,8 @@ def save_optimization_results(
     if not pareto_df.empty:
         save_csv(pareto_df, output_dir / "pareto_front.csv")
     save_csv(best_df, output_dir / "best_conditions.csv")
+    save_json({"status": "exploratory", "weights": {"uniformity": .5, "peak_to_mean": .3, "roughness": 0.},
+               "warning": "Within-campaign ranking only; weights are arbitrary and this is not a validated manufacturing optimum."}, output_dir / "optimization_assumptions.json")
 
 
 def run_optimization_analysis(campaign_id: str, output_base: Path) -> None:

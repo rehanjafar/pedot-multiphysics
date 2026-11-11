@@ -112,6 +112,11 @@ def build_domain(geo: GeometryConfig, num: NumericalConfig) -> DomainInfo:
     # Domain = left + right compartments + bridge channel
     domain_mask = left_mask | right_mask | bridge_mask
 
+    from scipy.ndimage import label
+    _, components = label(domain_mask)
+    if components != 1:
+        raise ValueError("Grid does not resolve a connected salt bridge; increase Ny")
+
     # Electrode (BPE) at bridge center
     x_bpe_center = cw + bl / 2.0
     bpe_x = (grid.X >= x_bpe_center - el / 2.0) & (grid.X <= x_bpe_center + el / 2.0)

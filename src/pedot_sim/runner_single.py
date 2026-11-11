@@ -38,6 +38,7 @@ from pedot_sim.utils_io import (
     save_json,
     save_npz,
     save_csv,
+    runtime_provenance,
 )
 
 logger = logging.getLogger(__name__)
@@ -136,7 +137,7 @@ def _try_generate_figures(
         logger.warning("Failed to generate thickness evolution figure", exc_info=True)
 
     try:
-        _plot_timeseries(timeseries, fig_dir)
+        _plot_timeseries(timeseries, fig_dir, config)
     except Exception:
         logger.warning("Failed to generate timeseries figure", exc_info=True)
 
@@ -180,6 +181,7 @@ def _plot_thickness_evolution(
 def _plot_timeseries(
     records: List[TimeseriesRecord],
     out_dir: Path,
+    config: SimConfig,
 ) -> None:
     import matplotlib
 
@@ -194,7 +196,7 @@ def _plot_timeseries(
     axes[0].set_ylabel("Mean h [\u03bcm]")
 
     axes[1].plot(times, [r.asymmetry_index for r in records])
-    axes[1].set_ylabel("Asymmetry Index")
+    axes[1].set_ylabel("Peak/mean thickness (AI)")
 
     axes[2].plot(times, [r.depletion_depth * 1e3 for r in records])
     axes[2].set_ylabel("Depletion depth [mm]")
@@ -202,7 +204,7 @@ def _plot_timeseries(
 
     fig.suptitle("Timeseries diagnostics")
     fig.tight_layout()
-    fig.savefig(out_dir / "timeseries.png", dpi=150)
+    fig.savefig(out_dir / f"timeseries.{config.output.figure_format}", dpi=config.output.dpi)
     plt.close(fig)
 
 
@@ -222,7 +224,7 @@ def _plot_concentration_snapshots(
         return
     indices = np.linspace(0, len(snapshots) - 1, n, dtype=int)
 
-    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4))
+    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4), layout="constrained")
     if n == 1:
         axes = [axes]
 
@@ -243,8 +245,7 @@ def _plot_concentration_snapshots(
         ax.set_ylabel("y [mm]")
 
     fig.colorbar(im, ax=axes, label="C [mol/m\u00b3]", shrink=0.8)
-    fig.tight_layout()
-    fig.savefig(out_dir / "concentration_snapshots.png", dpi=150)
+    fig.savefig(out_dir / f"concentration_snapshots.{config.output.figure_format}", dpi=config.output.dpi)
     plt.close(fig)
 
 
@@ -277,15 +278,17 @@ def run_single(
         Metrics dictionary summarising the run outcome.  On failure the
         dict will contain ``"status": "failed"`` and an ``"error"`` key.
     """
+    from .research import process_diagnostics, ohmic_power_per_depth
+    from .waveforms import integration_times
     from .config import validate_config
-    from .utils_io import validate_id
+    from .utils_io import validate_id, safe_output_path
     validate_config(config)
     validate_id(campaign_id); validate_id(run_id)
     output_base = Path(output_base)
     # ---- Output directory tree -------------------------------------------
-    run_dir = ensure_dir(output_base / "simulated_raw" / campaign_id / run_id)
-    if (run_dir / "params.json").exists():
-        raise FileExistsError(f"Run already exists: {run_dir}; choose a new campaign/run ID")
+    run_dir = safe_output_path(output_base, "simulated_raw", campaign_id, run_id)
+    run_dir.parent.mkdir(parents=True, exist_ok=True)
+    run_dir.mkdir(exist_ok=False)  # Atomic claim: concurrent runs cannot overwrite each other.
     for sub in ("figures", "animations", "logs"):
         ensure_dir(run_dir / sub)
 
@@ -328,6 +331,7 @@ def run_single(
 
         # ---- Initialise fields -------------------------------------------
         C = np.where(domain.domain_mask, config.physics.C_bulk, 0.)
+        initial_C = C.copy()
 
         # Electrode cells for h
         e_rows, e_cols = np.where(domain.electrode_mask)
@@ -340,13 +344,10 @@ def run_single(
         nuc_model = NucleationModel(config.nucleation, n_electrode)
         h = nuc_model.generate_initial_nuclei()
 
-        dt = config.numerical.dt
-        if config.physics.physics_stage.upper() != "A":
-            dt = min(dt, 1. / (40 * config.waveform.frequency))
-            if config.waveform.waveform_type == "pulsed":
-                dt = min(dt, min(config.waveform.duty_cycle, 1-config.waveform.duty_cycle) / (10*config.waveform.frequency))
+        endpoints = integration_times(config)
+        dt = float(np.max(np.diff(endpoints)))
         t_end = config.numerical.t_end
-        n_steps = int(np.ceil(t_end / dt))
+        n_steps = len(endpoints)-1
 
         # Determine snapshot timestep indices
         n_snapshots = config.numerical.n_snapshots
@@ -355,6 +356,7 @@ def run_single(
             snapshot_indices = set(
                 np.linspace(0, n_steps - 1, n_snapshots, dtype=int).tolist()
             )
+            snapshot_indices.add(n_steps-1)
 
         # How often to record timeseries (aim for ~1000 rows max)
         ts_stride = max(1, n_steps // 1000)
@@ -365,15 +367,18 @@ def run_single(
         )
 
         # ---- Time-stepping loop ------------------------------------------
-        timeseries: List[TimeseriesRecord] = []
+        timeseries: List[TimeseriesRecord] = [TimeseriesRecord(0., 0., 0., 1., 0., 0., 0.)]
         snapshots: List[Dict[str, Any]] = [{"time": 0., "C": C.copy(), "h": h.copy()}] if n_snapshots else []
         initial_h = h.copy()
         flux_history: List[float] = []
         V_prev: Optional[np.ndarray] = None
+        consumed_total = reservoir_total = 0.
+        energy = None if config.physics.physics_stage == "A" else 0.
+        max_laplace_residual = 0.
 
         for step in range(n_steps):
-            t = step * dt
-            step_dt = min(dt, t_end-t)
+            t = float(endpoints[step])
+            step_dt = float(endpoints[step+1]-t)
 
             # Use the master physics orchestrator from growth.py
             step_result: StepResult = evolve_one_timestep(
@@ -390,7 +395,12 @@ def run_single(
             h = step_result.h
             V_prev = step_result.V_field
             flux_history.append(step_result.total_flux * step_dt)
-            t += step_dt
+            t = float(endpoints[step+1])
+            consumed_total += step_result.solver_info["consumed_mol_per_m"]
+            reservoir_total += step_result.solver_info["reservoir_exchange_mol_per_m"]
+            max_laplace_residual = max(max_laplace_residual, step_result.solver_info.get("laplace_residual", 0.))
+            if energy is not None:
+                energy += ohmic_power_per_depth(V_prev, domain, config.physics.conductivity)*step_dt
 
             # Record timeseries
             record_ts = (step % ts_stride == 0) or (step in snapshot_indices) or step == n_steps-1
@@ -400,7 +410,8 @@ def run_single(
                 ai = anisotropy_index(h)
                 ui = uniformity_index(h)
                 dd = depletion_depth(
-                    C, config.physics.C_bulk, grid, domain.electrode_mask
+                    C, config.physics.C_bulk, grid, domain.electrode_mask,
+                    domain_mask=domain.domain_mask
                 )
                 timeseries.append(TimeseriesRecord(
                     time=t,
@@ -439,6 +450,7 @@ def run_single(
             dt_array=dt_arr,
             h_history=h_history_arr,
             t_array=t_snap_arr,
+            domain_mask=domain.domain_mask,
         )
 
         final_mean_h = float(np.mean(h)) if n_electrode > 0 else 0.0
@@ -460,6 +472,14 @@ def run_single(
             "bridge_width": config.geometry.bridge_width,
             "geometry": config.geometry.geometry_type,
             "seed": config.nucleation.seed,
+            "noise_enabled": config.nucleation.enable_noise,
+            "V_DC": config.waveform.V_DC,
+            "V_AC": config.waveform.V_AC,
+            "waveform_type": config.waveform.waveform_type,
+            "duty_cycle": config.waveform.duty_cycle,
+            "rest_fraction": config.waveform.rest_fraction,
+            "adc_ratio": config.waveform.adc_ratio,
+            "t_end": t_end,
             "mean_h": final_mean_h,
             "max_h": final_max_h,
             "AI": all_metrics["AI"],
@@ -474,6 +494,15 @@ def run_single(
             "total_charge_proxy": all_metrics["total_charge_proxy"],
             "roughness": all_metrics["roughness"],
         }
+
+        process_metrics, audit = process_diagnostics(
+            config, domain, initial_C, C, h, consumed_total, reservoir_total, energy)
+        metrics.update(process_metrics)
+        save_json(audit, run_dir / "research_audit.json")
+        # Final state is always saved even when snapshot output is disabled.
+        save_npz({"h": h, "x": electrode_x, "C": C,
+                  "domain_mask": domain.domain_mask, "electrode_mask": domain.electrode_mask},
+                 run_dir / "final_state.npz")
 
         # ---- Persist outputs ---------------------------------------------
         if config.output.save_fields:
@@ -498,11 +527,14 @@ def run_single(
                 "run_id": run_id,
                 "campaign_id": campaign_id,
                 "status": "completed",
+                "provenance": runtime_provenance(),
                 "start_time": start_iso,
                 "end_time": datetime.now(timezone.utc).isoformat(),
                 "wall_clock_s": wall_time,
                 "n_timesteps": n_steps,
                 "effective_dt": dt,
+                "minimum_dt": float(np.min(np.diff(endpoints))),
+                "max_laplace_residual": max_laplace_residual,
                 "final_time": t,
                 "n_electrode_cells": n_electrode,
                 "hostname": platform.node(),

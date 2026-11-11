@@ -281,3 +281,32 @@ def get_overpotential_at_bpe(
             weights, physics.C_bulk, physics.alpha, physics.n_electrons, physics.T)))
     metal = brentq(net, float(values.min()-1.), float(values.max()+1.), xtol=1e-13)
     return metal-values
+
+
+from functools import lru_cache
+
+
+@lru_cache(maxsize=8)
+def _unit_potential(shape, mask_bytes, left_bytes, right_bytes, dx, dy, tol, max_iter):
+    from types import SimpleNamespace
+    mask = np.frombuffer(mask_bytes, dtype=bool).reshape(shape)
+    left = np.frombuffer(left_bytes, dtype=bool).reshape(shape)
+    right = np.frombuffer(right_bytes, dtype=bool).reshape(shape)
+    grid = SimpleNamespace(dx=dx, dy=dy)
+    V, iterations, residual = solve_laplace_2d(
+        grid, mask, .5, -.5, left, right, np.zeros(shape, dtype=bool),
+        tol=tol, max_iter=max_iter)
+    if residual >= tol:
+        raise RuntimeError("Laplace solver did not converge")
+    V.setflags(write=False)
+    return V, iterations, residual
+
+
+def fixed_domain_potential(domain, applied_voltage, tol, max_iter, voltage_bound):
+    """Scale a cached unit-drive solution without weakening absolute tolerance."""
+    unit_tol = tol/max(1., voltage_bound)
+    V, iterations, residual = _unit_potential(
+        domain.domain_mask.shape, domain.domain_mask.tobytes(),
+        domain.left_feeder_mask.tobytes(), domain.right_feeder_mask.tobytes(),
+        domain.grid.dx, domain.grid.dy, unit_tol, max_iter)
+    return V*applied_voltage, iterations, residual*abs(applied_voltage)

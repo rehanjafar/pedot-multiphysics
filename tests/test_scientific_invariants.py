@@ -68,7 +68,7 @@ def test_film_mass_equals_consumption(N):
     d=build_domain(c.geometry,c.numerical); C=np.where(d.domain_mask,50.,0.);h=np.zeros(d.electrode_mask.sum())
     result=evolve_one_timestep(C,h,0.,1.,c,d,None)
     loss=(C-result.C)[d.electrode_mask]*d.grid.dy
-    np.testing.assert_allclose(result.h*1340/.14218,loss)
+    np.testing.assert_allclose(result.h*1340/.14016,loss)
     assert np.all(result.C>=0);assert np.all(loss<=50*d.grid.dy)
 
 
@@ -150,7 +150,6 @@ def test_manifest_location_and_changed_config_refusal(tmp_path):
     c=config();directory=get_campaign_dir(tmp_path,'case')
     assert directory==tmp_path/'simulated_agg/case'
     # Avoid a process pool: simulate an already completed campaign with no pending runs.
-    c.batch.frequencies=[]; c.batch.n_replicates=0
     with patch('pedot_sim.runner_batch.generate_factorial_runs',return_value=[]):
         run_batch(c,'case',tmp_path)
         c.physics.k_rxn*=2

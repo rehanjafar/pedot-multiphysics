@@ -72,6 +72,7 @@ def depletion_depth(
     grid: Grid2D,
     electrode_mask: np.ndarray,
     threshold: float = 0.9,
+    domain_mask: np.ndarray | None = None,
 ) -> float:
     """Depletion zone depth from electrode surface.
 
@@ -93,6 +94,10 @@ def depletion_depth(
     float
         Depletion depth [m]. 0 if no depletion.
     """
+    if domain_mask is None:
+        domain_mask = np.ones_like(electrode_mask, dtype=bool)
+    if not 0 < threshold <= 1 or C_bulk <= 0:
+        raise ValueError("Invalid depletion threshold or bulk concentration")
     rows, cols = np.where(electrode_mask)
     if len(rows) == 0:
         return 0.0
@@ -106,6 +111,8 @@ def depletion_depth(
         j = j_elec + direction
         depth = 0.0
         while 0 <= j < grid.Ny:
+            if not np.all(domain_mask[j, cols]):
+                break
             # Average concentration along x at this y-row
             C_row = C_field[j, cols]
             C_mean = np.mean(C_row) if len(C_row) > 0 else C_bulk
@@ -149,8 +156,8 @@ def timescale_ratio(
     -------
     float
         Timescale ratio (dimensionless).
-        > 1 means diffusion-limited (anisotropic growth expected).
-        < 1 means reaction-limited (uniform growth expected).
+        > 1 indicates a relatively fast surface reaction. This ratio alone
+        does not predict dendritic morphology or prove transport limitation.
     """
     if D == 0:
         return float("inf")
@@ -205,8 +212,9 @@ def total_charge_proxy(
     float
         Total charge proxy [mol/m].
     """
-    n = min(len(flux_history), len(dt_array))
-    return float(np.sum(flux_history[:n] * dt_array[:n]))
+    if len(flux_history) != len(dt_array) or np.any(np.asarray(dt_array) <= 0):
+        raise ValueError("Flux and positive timestep arrays must have matching lengths")
+    return float(np.sum(flux_history * dt_array))
 
 
 def roughness_metric(h: np.ndarray, dx: float = 1.0) -> float:
@@ -246,6 +254,7 @@ def compute_all_metrics(
     dt_array: Optional[np.ndarray] = None,
     h_history: Optional[np.ndarray] = None,
     t_array: Optional[np.ndarray] = None,
+    domain_mask: np.ndarray | None = None,
 ) -> dict:
     """Compute all morphology metrics.
 
@@ -257,7 +266,7 @@ def compute_all_metrics(
     """
     ai = anisotropy_index(h)
     ui = uniformity_index(h)
-    dd = depletion_depth(C_field, C_bulk, grid, electrode_mask)
+    dd = depletion_depth(C_field, C_bulk, grid, electrode_mask, domain_mask=domain_mask)
     tr = timescale_ratio(D, k_rxn, L_electrode)
 
     mgr = 0.0

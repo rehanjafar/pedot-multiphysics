@@ -52,7 +52,7 @@ def asymmetric_adc(
     freq: float,
     adc_ratio: float = 0.7,
 ) -> float | np.ndarray:
-    """Asymmetric AC/DC waveform (Lee et al. 2024).
+    """Exploratory asymmetric half-sine waveform (not the Lee 2024 protocol).
 
     Positive half-cycle is scaled by adc_ratio,
     negative half-cycle scaled by (1 - adc_ratio).
@@ -100,15 +100,16 @@ def get_waveform(config: WaveformConfig) -> Callable[[float | np.ndarray], float
 
     def waveform_func(t: float | np.ndarray) -> float | np.ndarray:
         if wtype == "sinusoidal":
-            if config.rest_fraction > 0:
-                return with_rest(t, config.V_DC, config.V_AC, config.frequency, config.rest_fraction)
-            return sinusoidal(t, config.V_DC, config.V_AC, config.frequency)
+            value = sinusoidal(t, config.V_DC, config.V_AC, config.frequency)
         elif wtype == "pulsed":
-            return pulsed(t, config.V_DC, config.V_AC, config.frequency, config.duty_cycle)
+            value = pulsed(t, config.V_DC, config.V_AC, config.frequency, config.duty_cycle)
         elif wtype == "asymmetric_adc":
-            return asymmetric_adc(t, config.V_DC, config.V_AC, config.frequency, config.adc_ratio)
+            value = asymmetric_adc(t, config.V_DC, config.V_AC, config.frequency, config.adc_ratio)
         else:
-            return sinusoidal(t, config.V_DC, config.V_AC, config.frequency)
+            raise ValueError(f"Unknown waveform: {wtype}")
+        if config.rest_fraction > 0:
+            value = np.where((np.asarray(t)*config.frequency) % 1 < 1-config.rest_fraction, value, 0.)
+        return value
 
     return waveform_func
 
@@ -127,3 +128,30 @@ def get_boundary_potentials(V_total: float) -> tuple[float, float]:
         Left feeder = +V/2, Right feeder = -V/2.
     """
     return (+V_total / 2.0, -V_total / 2.0)
+
+
+def integration_times(config):
+    """Step endpoints including pulse/rest transitions; no step crosses a jump.
+
+    Continuous signals receive >=40 samples per period. All waveforms are
+    sampled at step midpoints. This resolves the drive, not electrochemistry.
+    """
+    w, n = config.waveform, config.numerical
+    dt = n.dt if config.physics.physics_stage == "A" else min(n.dt, 1/(40*w.frequency))
+    count = int(np.ceil(n.t_end / dt))
+    if count > 2_000_000:
+        raise ValueError("More than two million timesteps requested; shorten duration or lower frequency")
+    endpoints = np.minimum(np.arange(count + 1) * dt, n.t_end)
+    if config.physics.physics_stage != "A":
+        phases = [0.]
+        if w.waveform_type == "pulsed":
+            phases.append(w.duty_cycle)
+        if w.rest_fraction:
+            phases.append(1-w.rest_fraction)
+        cycles = np.arange(int(np.ceil(n.t_end*w.frequency))+1)
+        jumps = np.concatenate([(cycles+phase)/w.frequency for phase in phases])
+        endpoints = np.sort(np.concatenate([endpoints, jumps[(jumps>0)&(jumps<n.t_end)]]))
+        # Merge roundoff duplicates without discarding the final endpoint.
+        keep = np.r_[np.diff(endpoints) > 32*np.finfo(float).eps*max(1., n.t_end), True]
+        endpoints = endpoints[keep]
+    return endpoints

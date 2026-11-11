@@ -18,7 +18,7 @@ import pandas as pd
 
 from .config import SimConfig
 from .runner_single import run_single
-from .utils_io import ensure_dir, load_json, save_csv
+from .utils_io import ensure_dir, load_json, save_csv, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,9 @@ def run_timestep_refinement(
     pd.DataFrame
     """
     if dt_values is None:
-        dt_values = [0.01, 0.005, 0.001]
+        from .waveforms import integration_times
+        base_dt = float(np.max(np.diff(integration_times(config))))
+        dt_values = [base_dt, base_dt/2, base_dt/4]
 
     output_base = Path(output_base)
     results = []
@@ -120,7 +122,7 @@ def run_timestep_refinement(
         cfg = config.copy()
         cfg.numerical.dt = dt_val
         cfg.nucleation.enable_noise = False
-        run_id = f"verify_dt_{dt_val:.0e}".replace("+", "").replace("-", "m")
+        run_id = f"verify_dt_{dt_val:.17g}".replace("+", "").replace("-", "m")
 
         logger.info("Timestep refinement: dt=%e", dt_val)
         try:
@@ -220,10 +222,9 @@ def run_full_verification(
     output_base = Path(output_base)
     fig_dir = ensure_dir(output_base / "reports" / campaign_id / "figures")
 
-    # Use short simulation for verification
+    # Verify the requested physical duration; do not silently shorten the experiment.
     cfg = config.copy()
     cfg.nucleation.enable_noise = False
-    cfg.numerical.t_end = min(cfg.numerical.t_end, 10.0)  # Short run for verification
 
     logger.info("Running mesh refinement study...")
     mesh_df = run_mesh_refinement(cfg, campaign_id, output_base)
@@ -233,14 +234,22 @@ def run_full_verification(
     dt_df = run_timestep_refinement(cfg, campaign_id, output_base)
     plot_convergence(dt_df, "dt", fig_dir / "verification_timestep.png", "Timestep Refinement")
 
-    # Passing means these output tolerances were met, not experimental validation.
+    # Passing these output tolerances does not establish empirical validity.
+    failures = []
     for name, frame in (("mesh", mesh_df), ("timestep", dt_df)):
         if not np.isfinite(frame[["AI", "UI", "mean_h"]].values).all():
-            raise ValueError(f"{name} refinement contains failed/nonfinite runs")
+            failures.append(f"{name} refinement contains failed/nonfinite runs")
+            continue
         if name == "timestep" and frame.effective_dt.nunique() < 3:
-            raise ValueError("Waveform timestep cap collapsed refinement levels; use smaller dt values")
+            failures.append("Waveform timestep cap collapsed refinement levels")
         for metric, floor in (("AI", 1e-8), ("UI", 1e-12), ("mean_h", 1e-12)):
             coarse, fine = frame[metric].values[-2:]
             if abs(coarse-fine) > max(floor, .05*abs(fine)):
-                raise ValueError(f"{name} refinement did not meet 5% tolerance for {metric}")
+                failures.append(f"{name} refinement did not meet 5% tolerance for {metric}")
+    save_json({"passed": not failures, "failures": failures, "t_end": cfg.numerical.t_end,
+               "physics_stage": cfg.physics.physics_stage, "relative_tolerance": .05,
+               "interpretation": "Numerical output agreement only; not experimental validation."},
+              ensure_dir(output_base / "verification" / campaign_id) / "verification_summary.json")
+    if failures:
+        raise ValueError("; ".join(failures))
     logger.info("Deterministic refinement tolerances passed (not experimental validation)")

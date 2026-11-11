@@ -3,6 +3,9 @@
 <p>Research prototype. Results are uncalibrated and are not experimental validation.</p>
 <h2>Methods and assumptions</h2><p>Masked theta diffusion with local implicit reaction splitting (first order overall), insulated inactive faces and fixed feeder reservoirs. Migration uses conservative upwind face fluxes. Film growth uses consumed monomer at one effective exposed face per electrode cell.</p>
 <p>Stage A is an imposed diffusion/reaction surrogate. Stages B/C add phenomenological field enhancement. Stage D balances a phenomenological signed BV proxy with anodic-only deposition, under a prescribed solution field. No self-consistent electrolyte/electrode current coupling, calibrated counter-reaction, evolving geometry, convection or experimental calibration is included. Molar flux per depth is not measured current.</p>
+<h2>Research readiness and units</h2>{% for audit in research_audits %}<pre>{{ audit | tojson(indent=2) }}</pre>{% endfor %}
+<h2>Statistical decisions</h2><pre>{{ analysis_decisions | tojson(indent=2) }}</pre>
+<p>Candidate rankings are exploratory and use arbitrary weights. They are not validated manufacturing recommendations. See docs/SCIENTIFIC_BASIS.md in the repository for primary sources and measurement requirements.</p>
 <h2>Actual run configurations</h2>{% for config in run_configs %}<pre>{{ config | tojson(indent=2) }}</pre>{% endfor %}
 <h2>Tables</h2>{% for key, table in tables.items() %}<h3>{{ key }}</h3>{{ table }}{% endfor %}
 <h2>Figures</h2>{% for fig in figures %}<figure><img src="{{ fig.path }}" alt="{{ fig.caption }}"><figcaption>{{ fig.caption }}</figcaption></figure>{% endfor %}</body></html>

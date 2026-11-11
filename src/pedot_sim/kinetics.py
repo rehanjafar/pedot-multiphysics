@@ -86,7 +86,7 @@ def flux_to_consumption_rate(
 def flux_to_growth_rate(
     j: np.ndarray | float,
     n_electrons: int = 2,
-    M_monomer: float = C.M_EDOT,
+    M_monomer: float = C.M_PEDOT_REPEAT,
     rho_film: float = C.RHO_PEDOT,
 ) -> np.ndarray | float:
     """Convert current density to film growth rate.
@@ -100,7 +100,7 @@ def flux_to_growth_rate(
     n_electrons : int
         Electrons per monomer oxidation.
     M_monomer : float
-        Monomer molar mass [kg/mol].
+        Deposited repeat-unit molar mass [kg/mol], excluding dopant by default.
     rho_film : float
         Film density [kg/m^3].
 
@@ -119,7 +119,7 @@ def effective_overpotential(
 ) -> np.ndarray | float:
     """Compute effective overpotential at the BPE surface.
 
-    eta = V_solution - V_bpe - E0
+    eta = V_bpe - V_solution - E0
 
     Parameters
     ----------
@@ -135,7 +135,7 @@ def effective_overpotential(
     eta : array_like
         Overpotential [V].
     """
-    return np.asarray(V_solution) - V_bpe_float - E0_formal
+    return V_bpe_float - np.asarray(V_solution) - E0_formal
 
 
 def tafel_current(
