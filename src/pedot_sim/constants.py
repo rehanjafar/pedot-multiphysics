@@ -3,8 +3,8 @@ Physical constants and PEDOT-specific parameters.
 
 Sources:
 - CODATA 2018 for fundamental constants
-- NIST Chemistry WebBook (2023) for thermophysical properties
-- Peer-reviewed literature for PEDOT-specific kinetic parameters
+- Material/kinetic presets below are exploratory, uncalibrated values.
+  No quantitative literature provenance or experimental fit is claimed.
 
 Units are SI unless otherwise noted.
 """
@@ -15,8 +15,8 @@ import math
 # ---------------------------------------------------------------------------
 # Fundamental constants (CODATA 2018)
 # ---------------------------------------------------------------------------
-F: float = 96_485.33  # Faraday constant [C/mol]
-R_GAS: float = 8.314  # Universal gas constant [J/(mol*K)]
+F: float = 96485.3321233100184  # N_A * e, exact SI defining constants [C/mol]
+R_GAS: float = 8.31446261815324  # N_A * k_B, exact SI [J/(mol*K)]
 k_B: float = 1.380649e-23  # Boltzmann constant [J/K]
 N_A: float = 6.02214076e23  # Avogadro number [1/mol]
 e_charge: float = 1.602176634e-19  # Elementary charge [C]
@@ -30,6 +30,7 @@ T_DEFAULT: float = 298.15  # Standard temperature [K]
 # EDOT monomer properties
 # ---------------------------------------------------------------------------
 M_EDOT: float = 142.18e-3  # Molar mass of EDOT [kg/mol]
+M_PEDOT_REPEAT: float = 140.16e-3  # Neutral C6H4O2S repeat, excludes dopant [kg/mol]
 RHO_PEDOT: float = 1340.0  # Approximate PEDOT film density [kg/m^3]
 R_EDOT: float = 3.5e-10  # Hydrodynamic radius of EDOT molecule [m]
 
@@ -37,8 +38,8 @@ R_EDOT: float = 3.5e-10  # Hydrodynamic radius of EDOT molecule [m]
 # Default electrochemical parameters
 # ---------------------------------------------------------------------------
 C_BULK_DEFAULT: float = 50.0  # Bulk EDOT concentration [mol/m^3] (0.05 M)
-D_EDOT_DEFAULT: float = 6.5e-10  # Diffusion coefficient of EDOT in aqueous [m^2/s]
-Z_EDOT: int = 1  # Charge number for oxidized monomer species
+D_EDOT_DEFAULT: float = 6.5e-10  # Exploratory diffusion coefficient [m^2/s]
+Z_EDOT: int = 0  # Neutral EDOT monomer; charged intermediates need a separate species model
 N_ELECTRONS: int = 2  # Electrons transferred per EDOT oxidation
 SIGMA_ELECTROLYTE: float = 1.0  # Electrolyte conductivity [S/m]
 
@@ -81,6 +82,8 @@ def stokes_einstein_D(mu: float, T: float = T_DEFAULT, r: float = R_EDOT) -> flo
     float
         Diffusion coefficient [m^2/s].
     """
+    if not all(math.isfinite(v) and v > 0 for v in (mu, T, r)):
+        raise ValueError("Viscosity, temperature and hydrodynamic radius must be positive and finite")
     return k_B * T / (6.0 * math.pi * mu * r)
 
 
@@ -92,9 +95,8 @@ class ViscosityLevel:
     D: float   # [m^2/s]
 
 
-# Low viscosity ~ water (mu ~ 0.001 Pa*s) -> D ~ 2e-9
-# Mid viscosity (mu ~ 0.003 Pa*s) -> D ~ 6.5e-10
-# High viscosity ~ ionic liquid regime (mu ~ 0.01 Pa*s) -> D ~ 1e-10
+# Legacy heuristic levels, NOT derived from the stated Stokes-Einstein inputs.
+# Labels and pairs below define a sensitivity design, not measured solvent properties.
 VISCOSITY_LOW = ViscosityLevel("low", 0.001, 2.0e-9)
 VISCOSITY_MID = ViscosityLevel("mid", 0.003, 6.5e-10)
 VISCOSITY_HIGH = ViscosityLevel("high", 0.01, 1.0e-10)

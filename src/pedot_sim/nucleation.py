@@ -1,14 +1,7 @@
-"""
-Stochastic nucleation model for PEDOT film formation.
+"""Uncalibrated Poisson multiplier for heterogeneous surface reaction.
 
-Based on the liquid-to-solid phase transformation observed by
-Subramanian and Martin (Macromolecules 2021; Nano Lett. 2021):
-- Liquid oligomer droplets form at the electrode surface
-- Droplets nucleate, diffuse, and merge into polymer nodules
-- Modeled as Poisson-distributed nucleation events with small
-  thickness perturbations
-
-All randomness uses numpy.random.default_rng(seed) for determinism.
+This does not reproduce a published droplet/nucleation mechanism. It changes
+requested reaction rates while retaining material accounting in growth.py.
 """
 
 from __future__ import annotations
@@ -34,6 +27,7 @@ class NucleationModel:
         self.n_electrode = n_electrode
         self.rng = np.random.default_rng(config.seed)
         self.enabled = config.enable_noise
+        self.events = np.zeros(n_electrode, dtype=int)
 
     def generate_initial_nuclei(self) -> np.ndarray:
         """Generate initial thickness perturbation on electrode surface.
@@ -41,15 +35,9 @@ class NucleationModel:
         Returns
         -------
         h0 : np.ndarray, shape (n_electrode,)
-            Initial film thickness [m] with small random perturbation.
+            Zero initial film thickness [m]; no source of free polymer mass.
         """
-        if not self.enabled:
-            return np.zeros(self.n_electrode)
-
-        amp = self.config.noise_amplitude
-        # Small uniform perturbation
-        h0 = amp * self.rng.uniform(0, 1, size=self.n_electrode)
-        return h0
+        return np.zeros(self.n_electrode)
 
     def add_nucleation_noise(
         self,
@@ -78,14 +66,16 @@ class NucleationModel:
         if not self.enabled:
             return h.copy()
 
-        rate = self.config.nucleation_rate  # events/(m*s) -> per cell: rate*dx*dt
-        amp = self.config.noise_amplitude
+        raise ValueError("Additive film noise is unsupported; use flux_multiplier")
 
-        # Expected number of events per cell in this timestep
-        lam = rate * dt
-        # Poisson-distributed number of events
-        n_events = self.rng.poisson(lam, size=self.n_electrode)
-        # Each event adds a small random thickness
-        dh = n_events * amp * self.rng.uniform(0.5, 1.5, size=self.n_electrode)
+    def flux_multiplier(self, dt: float, dx: float) -> np.ndarray:
+        """Dimensionless heterogeneity; deposition still consumes monomer.
 
-        return h + dh
+        A phenomenological multiplicative model, not calibrated nucleation physics.
+        """
+        if not self.enabled:
+            return np.ones(self.n_electrode)
+        events = self.rng.poisson(self.config.nucleation_rate * dx * dt,
+                                  size=self.n_electrode)
+        self.events += events
+        return 1. + self.events

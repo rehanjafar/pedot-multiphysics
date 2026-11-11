@@ -1,41 +1,16 @@
-# Experimental Data Directory
+# Experimental data
 
-Place experimental data files here for validation against simulation results.
+No measured datasets are included. Synthetic test fixtures are only software tests.
 
-## Accepted Formats
+For `pedot-sim validate`, provide a CSV and JSON metadata with a source identifier
+and exact SI unit declarations. Thickness: `time,mean_h` [s,m]; profile: `x,h` [m,m];
+CA: `t,I` [s,A]; CV: `V,I` [V,A] after separating monotonic scan branches.
+Record instrument, chemistry, electrode geometry, waveform convention, sample
+identity, replicate, uncertainty and calibration/validation partition in metadata.
 
-### Cyclic Voltammetry (CV) Data
-- **File format**: CSV
-- **Required columns**: `V` (potential in Volts), `I` (current in Amps)
-- **Example filename**: `cv_pedot_10hz.csv`
+The directly driven wire model currently reports lattice cells and model steps.
+Do not label those quantities metres or seconds without a calibrated mapping.
+For morphology validation, retain original scaled micrographs/time sequences and
+use the same segmentation for simulated and measured projected structures.
 
-```csv
-V,I
--0.5,0.00001
--0.4,0.00002
-...
-```
-
-### Chronoamperometry (CA) Data
-- **File format**: CSV
-- **Required columns**: `t` (time in seconds), `I` (current in Amps)
-- **Example filename**: `ca_pedot_dc2v.csv`
-
-```csv
-t,I
-0.0,0.001
-0.1,0.00095
-...
-```
-
-## Usage
-
-Run validation with:
-```bash
-pedot-sim validate --sim-run data/simulated_raw/campaign_id/run_id --exp-data data/experimental/your_file.csv --type CA
-```
-
-## Notes
-- Ensure consistent units (SI)
-- Time series should start at t=0
-- CV data should cover at least one full cycle
+See ../../docs/SCIENTIFIC_BASIS.md for the evidence and validation protocol.

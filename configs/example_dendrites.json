@@ -1,0 +1,19 @@
+{
+  "nx": 61,
+  "ny": 41,
+  "wire_length": 10,
+  "wire_width": 3,
+  "n_particles": 500,
+  "steps": 400,
+  "period_steps": 40.0,
+  "amplitude_V": 5.0,
+  "offset_V": 0.0,
+  "duty_cycle": 0.5,
+  "diffusion_cells2_per_step": 0.15,
+  "mobility_cells2_per_V_step": 0.5,
+  "species_charge_sign": 1,
+  "attachment_probability": 0.25,
+  "activation_voltage_V": 0.02,
+  "seed": 42,
+  "snapshot_stride": 20
+}

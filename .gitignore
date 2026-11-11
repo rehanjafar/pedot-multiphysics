@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage*
+*.egg-info/
+build/
+dist/
+.venv/
+data/simulated_raw/
+data/simulated_agg/
+data/verification/
+data/reports/
+data/dendrites/
+data/comparisons/
+coverage.xml

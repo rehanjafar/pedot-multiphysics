@@ -91,7 +91,16 @@ def align_and_compare(
     dict
         Keys: RMSE, R_squared, max_error, mean_error.
     """
+    for label, frame in (("simulation", sim_data), ("experiment", exp_data)):
+        if not {x_col, y_col} <= set(frame.columns) or len(frame) < 2:
+            raise ValueError(f"{label} requires at least two rows with {x_col}, {y_col}")
+        if not np.isfinite(frame[[x_col, y_col]].to_numpy(dtype=float)).all():
+            raise ValueError(f"{label} contains nonfinite values")
     # Interpolate simulation to experimental x values
+    if not np.all(np.diff(sim_data[x_col].values) > 0):
+        raise ValueError("Simulation x values must be strictly increasing; split CV branches first")
+    if exp_data[x_col].min() < sim_data[x_col].min() or exp_data[x_col].max() > sim_data[x_col].max():
+        raise ValueError("Experimental points exceed simulated range")
     sim_interp = np.interp(exp_data[x_col].values, sim_data[x_col].values, sim_data[y_col].values)
     exp_vals = exp_data[y_col].values
 
@@ -100,13 +109,15 @@ def align_and_compare(
 
     ss_res = np.sum(residuals ** 2)
     ss_tot = np.sum((exp_vals - np.mean(exp_vals)) ** 2)
-    r_squared = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+    r_squared = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else None
 
     return {
         "RMSE": rmse,
         "R_squared": r_squared,
         "max_error": float(np.max(np.abs(residuals))),
         "mean_error": float(np.mean(np.abs(residuals))),
+        "bias": float(np.mean(residuals)),
+        "n_points": len(exp_vals),
     }
 
 
@@ -177,27 +188,71 @@ def run_validation(
         if data_type == "CV":
             exp_df = load_experimental_cv(exp_data_path)
             x_col, y_col = "V", "I"
-        else:
+        elif data_type == "CA":
             exp_df = load_experimental_ca(exp_data_path)
             x_col, y_col = "t", "I"
+        else:
+            raise ValueError("data_type must be CV or CA")
 
-        # Map simulation columns
-        if y_col == "I" and "total_flux" in sim_df.columns:
-            sim_df["I"] = sim_df["total_flux"]  # Proxy
-
+        sim_df = sim_df.rename(columns={"time": "t"})
+        if "I" not in sim_df:
+            raise ValueError("A dimensioned I [A] column is required; molar flux proxies cannot be compared to amperes")
         metrics = align_and_compare(sim_df, exp_df, x_col, y_col)
         report.metrics = metrics
         report.notes.append(f"Validation type: {data_type}")
         report.notes.append(f"RMSE: {metrics['RMSE']:.6f}")
-        report.notes.append(f"R²: {metrics['R_squared']:.4f}")
+        report.notes.append(f"R²: {metrics['R_squared']}")
 
         plot_path = output_dir / f"validation_{data_type.lower()}.png"
         plot_validation_overlay(sim_df, exp_df, plot_path, x_col, y_col)
         report.plots.append(plot_path)
 
     except Exception as e:
+        report.metrics = {"status": "failed", "error": str(e)}
         report.notes.append(f"Validation failed: {e}")
         logger.error("Validation failed: %s", e)
 
     report.save(output_dir)
     return report
+
+
+OBSERVABLES = {"thickness": ("time", "mean_h", "s", "m"),
+               "profile": ("x", "h", "m", "m"),
+               "CA": ("t", "I", "s", "A"), "CV": ("V", "I", "V", "A")}
+
+
+def compare_measurements(simulation, experiment, metadata, output_dir,
+                         observable="thickness", max_rmse=None):
+    """Compare matching observables, with explicit units and source provenance.
+
+    The threshold is user-specified in the outcome's units. A passing comparison
+    only applies to this dataset/protocol; it does not validate other processes.
+    CV must be split into monotonic branches before interpolation.
+    """
+    import hashlib
+    import json
+    if observable not in OBSERVABLES:
+        raise ValueError("Unsupported observable")
+    x, y, xunit, yunit = OBSERVABLES[observable]
+    source = json.loads(Path(metadata).read_text())
+    if not isinstance(source.get("source"), str) or not source["source"].strip():
+        raise ValueError("Experimental metadata requires a source citation or dataset identifier")
+    if source.get("units") != {x: xunit, y: yunit}:
+        raise ValueError(f"Experimental units must explicitly match {x}: {xunit}, {y}: {yunit}")
+    if max_rmse is not None and (not np.isfinite(max_rmse) or max_rmse <= 0):
+        raise ValueError("max_rmse must be positive and finite in observable units")
+    sim, exp = pd.read_csv(simulation), pd.read_csv(experiment)
+    if observable == "CA":
+        sim = sim.rename(columns={"time": "t"})
+    metrics = align_and_compare(sim, exp, x, y)
+    metrics.update({"status": "compared", "observable": observable, "units": source["units"],
+                    "experimental_metadata": source, "max_rmse": max_rmse,
+                    "acceptance": "not_assessed" if max_rmse is None else
+                        ("passed" if metrics["RMSE"] <= max_rmse else "failed"),
+                    "scope": "Dataset-specific comparison; verify independent validation and numerical convergence before scientific claims.",
+                    "sha256": {name: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+                               for name, path in (("simulation", simulation), ("experiment", experiment), ("metadata", metadata))}})
+    out = ensure_dir(Path(output_dir))
+    save_json(metrics, out / "validation_metrics.json")
+    plot_validation_overlay(sim, exp, out / "validation_overlay.png", x, y)
+    return metrics

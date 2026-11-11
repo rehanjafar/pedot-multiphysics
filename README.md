@@ -1,181 +1,81 @@
-# pedot-multiphysics
+# EcoVolt / pedot-multiphysics
 
-Staged multiphysics simulation of waveform-controlled PEDOT electropolymerization in a two-compartment salt-bridge bipolar electrochemical system.
+Research software for **directly driven gold wires growing PEDOT dendrites**, with a separate legacy two-compartment deposition benchmark. The models are exploratory and uncalibrated. They cannot yet establish physical manufacturing optima, material performance or energy savings.
 
-## Overview
+Read [Scientific basis and readiness](docs/SCIENTIFIC_BASIS.md) for primary papers, verified experimental context, equations, parameter assumptions, units and the measurements needed for validation. The direct-wire model updates the conducting geometry and electric field as deposits grow. The legacy fixed-strip model does not.
 
-This package models how waveform parameters (frequency, amplitude, DC offset), electrolyte properties (diffusion coefficient / viscosity), and cell geometry (bridge width) influence PEDOT film morphology on a floating bipolar electrode (BPE). The simulation couples four physics stages of increasing complexity:
+## Install and test
 
-| Stage | Physics | PDE |
-|-------|---------|-----|
-| **A** | Diffusion-reaction | dC/dt = D nabla^2 C - R |
-| **B** | + Laplace electric field | nabla^2 V = 0, field-enhanced R |
-| **C** | + Nernst-Planck migration | ion flux includes zFDC/RT nabla V |
-| **D** | + Butler-Volmer kinetics | j = j0 (C/Cref)[exp(alpha nF eta/RT) - exp(-(1-alpha)nF eta/RT)] |
+Python 3.9+; from the repository directory:
 
-**Key dependent variables:**
-- **Anisotropy Index (AI)** = h_max / h_mean (1.0 = perfectly uniform)
-- **Uniformity Index (UI)** = std(h) (0.0 = perfectly uniform)
-
-**Central hypothesis:** Uniformity (low AI) is achieved when tau_diff << tau_rxn (high frequency, low viscosity). Anisotropy (high AI) emerges when tau_diff > tau_rxn.
-
-## Installation
-
-```bash
-# Clone and install in editable mode
-cd pedot-multiphysics
-pip install -e .
-
-# With optional 3D visualization
-pip install -e ".[viz3d]"
+```sh
+python -m pip install -e '.[dev]'
+python -m pytest tests --cov=pedot_sim --cov-report=term-missing
 ```
 
-**Requirements:** Python 3.9+, NumPy, SciPy, Matplotlib, Pandas, statsmodels, Jinja2.
+GitHub checks use Ubuntu 22.04 and Python 3.9, 3.12 and 3.14. The OS is explicit because Python 3.9 is unavailable on the latest Ubuntu runner. Tests cover analytic diffusion/convergence, potential boundary conditions, conservation, waveform timing, direct-wire geometry feedback, seeded growth, invalid inputs, measurement comparisons and output workflows. Passing these tests is not experimental validation.
 
-## Quick Start
+## Direct-wire dendrite research
 
-### Single run
-```bash
-pedot-sim run-single \
-  --config configs/example_verify.json \
-  --run-id smoke_001 \
-  --campaign-id quick_test \
-  -v
+```sh
+pedot-sim run-dendrite --config configs/example_dendrites.json --run-id seed42 --campaign-id wires_v1 --output-base data
+pedot-sim analyze-dendrites --campaign-id wires_v1 --output-base data
 ```
 
-### Full factorial campaign (54 runs)
-```bash
-pedot-sim run-batch \
-  --config configs/example_factorial.json \
-  --campaign-id factorial_v1 \
-  --max-workers 4 \
-  --sweep factorial \
-  -v
+Outputs are under `data/dendrites/wires_v1/`: each run has parameters, metadata, morphology snapshots, a morphology figure, timeseries and metrics. Campaign analysis writes `results.csv`, descriptive statistics and `report.html`. Change the configuration seed and use a new run ID for independent realizations. Reusing a seed/condition is rejected as replication during analysis.
+
+The lattice model simulates mobile charged aggregates, drift/diffusion, irreversible attachment, equipotential deposits and field feedback. It stops at the first conducting bridge. The left wire is driven and the right is grounded. All geometric quantities are in **lattice cells** and elapsed time in **model steps**. `period_steps` is not a frequency in Hz, and particle count is not molar concentration. Mobility, attachment and activation settings are assumptions. No physical length/time calibration or explicit counter-reaction is included. See the scientific-basis document before comparing maps with laboratory images.
+
+## Fixed-strip numerical benchmark
+
+```sh
+pedot-sim run-single --config configs/example_verify.json --run-id one --campaign-id strip_v3 --output-base data
+pedot-sim analyze --campaign-id strip_v3 --output-base data
+pedot-sim make-report --campaign-id strip_v3 --output-base data
+pedot-sim verify --config configs/example_verify.json --campaign-id verification_v3 --output-base data
 ```
 
-### Dense parameter sweep (500+ runs)
-```bash
-pedot-sim run-batch \
-  --config configs/example_dense.json \
-  --campaign-id dense_v1 \
-  --sweep dense \
-  --max-workers 8 \
-  -v
+Stage A imposes `J=kC` independently of voltage. B adds phenomenological field enhancement; C adds species migration (neutral EDOT defaults to charge zero); D uses a floating signed Butler–Volmer proxy and anodic deposition. These stages describe the **legacy floating-strip setup**, not directly driven wires. They omit explicit cathodic chemistry and growing geometry. The default strip verification case is stiff and has previously failed mesh tolerance: inspect the saved verification summary rather than treating successful execution as scientific accuracy.
+
+Transport uses masked theta diffusion, upwind migration and local implicit consumption. Backward Euler (`implicit_theta=1`) is the default; theta=0.5 requests Crank–Nicolson. The coupled splitting is first order. Waveform-dependent runs use at least 40 steps per period and include pulse/rest transitions as endpoints. Midpoint drive sampling and a final partial step prevent phase/end-time mistakes. `adaptive_dt=true` is rejected; `cfl_safety` controls migration substeps.
+
+The dry neutral repeat mass defaults to 0.14016 kg/mol; film density 1340 kg/m³ and deposition efficiency 1 are configurable **assumptions**. Every run checks consumed monomer, net reservoir exchange and retained film mass. Outputs include `research_audit.json`, an always-saved `final_state.npz`, thickness CV, signed left/right imbalance, dimensioned mass/charge proxies and electrolyte-only ohmic energy. Extensive quantities are **per metre of out-of-plane depth**. They are not measured cell current, total process energy or experimentally established yield. `save_fields` controls snapshot archives; final state and diagnostics remain available.
+
+AI retains the legacy peak/mean thickness definition; UI is standard deviation in metres. Neither measures dendrite branching. Zero-growth states are excluded from coating rankings. Default stochastic heterogeneity is disabled; when enabled it changes requested flux while preserving material accounting. `noise_amplitude` remains a legacy unused field, not a source of free film mass.
+
+## Campaigns and statistics
+
+```sh
+pedot-sim run-batch --config configs/example_factorial.json --campaign-id factorial_v3 --sweep factorial --max-workers 4
+pedot-sim run-batch --config configs/example_dense.json --campaign-id dense_v3 --sweep dense --max-workers 4
+pedot-sim analyze --campaign-id dense_v3 --output-base data
+pedot-sim make-report --campaign-id dense_v3 --output-base data
 ```
 
-### Numerical verification
-```bash
-pedot-sim verify \
-  --config configs/example_verify.json \
-  --campaign-id verify_v1 \
-  -v
+Factorials honor the requested frequency, D and geometry levels. Dense Latin hypercube/random designs sample five dimensions: frequency, log(D), width, DC offset and AC amplitude. Grid sampling uses a three-dimensional frequency/D/width grid with fixed configured voltages; its actual size is the nearest cube with at least two levels per axis. Numeric bridge width is authoritative. Diffusion/viscosity and conductivity/ionic strength are independent parameters, not inferred solvent relationships.
+
+Descriptive summaries use exact numeric conditions. ANOVA is skipped with a recorded reason for deterministic, incomplete or unsuitable designs. Standardized linear surrogates report leave-one-condition-out error and do not imply causality or empirical validation. Candidate/Pareto rankings use explicit arbitrary objectives and do not prove manufacturing optimality.
+
+A changed source/configuration fingerprint requires a new campaign ID. Existing run directories are never overwritten, including partial failures. Manifests are written atomically; IDs and escaping symlinks are rejected. A failed batch or numerical verification returns a nonzero exit code. JSON undefined numeric quantities become `null`.
+
+## Compare measurements
+
+No experimental datasets are bundled. For thickness, supply simulation and experimental CSVs with `time,mean_h` in seconds/metres, plus metadata such as:
+
+```json
+{"source": "Your dataset identifier or DOI", "units": {"time": "s", "mean_h": "m"}}
 ```
 
-### Statistical analysis
-```bash
-pedot-sim analyze --campaign-id factorial_v1 --output-base data
+```sh
+pedot-sim validate --simulation data/simulated_raw/strip_v3/one/timeseries.csv --experiment measurements.csv --metadata measurements.json --observable thickness --max-rmse 1e-7 --output-dir data/comparisons/thickness
 ```
 
-### Report generation
-```bash
-pedot-sim make-report --campaign-id factorial_v1 --output-base data
-```
+The shown threshold is illustrative, not a scientific acceptance criterion. Set it before comparison based on the experiment and its uncertainty. Profiles use `x,h` [m,m]; explicit current traces use `t,I` [s,A], and separately split monotonic CV branches use `V,I` [V,A]. Molar flux cannot be silently converted to amperes. The direct-wire model's lattice results need a justified physical mapping before quantitative measurement comparison.
 
-## Project Structure
+Reports retain error metrics, source metadata and input hashes; nonfinite values and extrapolation are rejected. A comparison without a threshold is marked `not_assessed`. A dataset-specific pass is not universal model validation. Keep calibration and validation measurements separate.
 
-```
-pedot-multiphysics/
-├── src/pedot_sim/
-│   ├── __init__.py          # Package init
-│   ├── config.py            # Dataclass-based configuration (SimConfig)
-│   ├── constants.py         # Physical constants (F, R, D_LEVELS, etc.)
-│   ├── geometry.py          # Two-compartment salt-bridge domain builder
-│   ├── waveforms.py         # V(t) = V_DC + V_AC*sin(2*pi*f*t) + pulsed, ADC
-│   ├── field.py             # Laplace solver (SOR) + electric field computation
-│   ├── transport.py         # Diffusion (semi-implicit) + Nernst-Planck migration
-│   ├── kinetics.py          # Butler-Volmer electrode kinetics
-│   ├── nucleation.py        # Stochastic nucleation model (seeded RNG)
-│   ├── growth.py            # Master timestep orchestrator (evolve_one_timestep)
-│   ├── metrics.py           # AI, UI, depletion depth, timescale ratio, roughness
-│   ├── runner_single.py     # Single-run executor with output serialization
-│   ├── runner_batch.py      # Parallel batch campaigns (factorial + dense sweeps)
-│   ├── viz2d.py             # 2D visualization (heatmaps, cross-sections, timeseries)
-│   ├── viz3d.py             # 3D PyVista surface plots and animations
-│   ├── analysis_stats.py    # 3-way ANOVA, polynomial regression, campaign plots
-│   ├── analysis_opt.py      # Pareto front optimization
-│   ├── verification.py      # Mesh + timestep refinement (Richardson extrapolation)
-│   ├── validation.py        # Experimental data comparison scaffold
-│   ├── reporting.py         # Jinja2 HTML + PDF report generator
-│   ├── cli.py               # CLI entry point (pedot-sim)
-│   ├── utils_io.py          # I/O utilities, RunManifest
-│   ├── utils_grid.py        # Grid2D dataclass
-│   └── logging_setup.py     # Logging configuration
-├── configs/
-│   ├── example_factorial.json   # 3x3x2x3 = 54 runs
-│   ├── example_dense.json       # 500-point LHS sweep
-│   └── example_verify.json      # Quick verification config
-├── tests/
-│   ├── test_metrics.py      # Unit tests for metrics
-│   ├── test_waveforms.py    # Unit tests for waveforms
-│   └── test_smoke_run.py    # End-to-end smoke tests (all 4 stages)
-├── reports/templates/        # Jinja2 HTML + Quarto templates
-├── data/experimental/        # Placeholder for experimental CV/CA data
-├── pyproject.toml
-├── requirements.txt
-└── README.md
-```
+## Optional output and license
 
-## Output Directory Layout
+`pip install -e '.[viz3d,io]'` enables optional animation dependencies. Legacy 3D views extrude a one-dimensional thickness profile; they are not three-dimensional physics. PDF reports require an optional renderer. Dependency ranges are not a lockfile or a claim of zero vulnerabilities.
 
-After running a campaign, the output structure is:
-
-```
-data/
-├── simulated_raw/<campaign_id>/
-│   └── <run_id>/
-│       ├── params.json       # Full configuration snapshot
-│       ├── metadata.json     # Runtime metadata + status
-│       ├── metrics.json      # Final AI, UI, growth rate, etc.
-│       ├── fields.npz        # Concentration snapshots
-│       ├── thickness.npz     # Film thickness snapshots
-│       ├── timeseries.csv    # Per-timestep diagnostics
-│       ├── figures/          # Per-run plots
-│       └── logs/run.log      # Detailed run log
-├── simulated_agg/<campaign_id>/
-│   ├── results.csv           # Aggregated metrics (one row per run)
-│   ├── descriptive_stats.csv
-│   ├── AI_anova_table.csv
-│   ├── UI_anova_table.csv
-│   ├── pareto_front.csv
-│   └── best_conditions.csv
-└── reports/<campaign_id>/
-    ├── final_report.html
-    ├── final_report.pdf      # (if weasyprint/wkhtmltopdf available)
-    └── figures/              # Campaign-level plots
-```
-
-## Factorial Design
-
-The default factorial design crosses:
-
-| Factor | Levels | Values |
-|--------|--------|--------|
-| Frequency | 3 | 1, 10, 100 Hz |
-| Diffusion coefficient (D) | 3 | 1e-10 (low), 6.5e-10 (mid), 2e-9 (high) m^2/s |
-| Geometry (bridge width) | 2 | narrow (2 mm), wide (5 mm) |
-| Replicates | 3 | Seeds 42, 43, 44 |
-
-**Total: 3 x 3 x 2 x 3 = 54 runs**
-
-D levels correspond to electrolyte viscosity via the Stokes-Einstein relation: D = kT / (6 pi mu r).
-
-## Running Tests
-
-```bash
-pip install -e ".[dev]"
-pytest tests/ -v
-```
-
-## License
-
-Research software. Please cite if used in publications.
+MIT; see [LICENSE](LICENSE). Cite the software revision, complete configuration, primary scientific sources, numerical resolution and independent validation evidence in scientific use.

@@ -178,8 +178,8 @@ def _animate_growth_matplotlib(
         ax.set_ylabel("Thickness [µm]")
         ax.set_title(f"PEDOT Growth (frame {i + 1}/{n_frames})")
         fig.canvas.draw()
-        img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        img = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+        img = img.reshape(fig.canvas.get_width_height()[::-1] + (4,))
         frames.append(img)
         plt.close(fig)
 

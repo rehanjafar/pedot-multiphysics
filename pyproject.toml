@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pedot-multiphysics"
-version = "0.1.0"
+version = "0.2.0"
 description = "Multiphysics simulation of PEDOT electropolymerization"
 readme = "README.md"
 license = {text = "MIT"}
@@ -58,7 +58,7 @@ pedot-sim = "pedot_sim.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-pedot_sim = ["py.typed"]
+pedot_sim = ["templates/*.j2"]
 
 [tool.ruff]
 line-length = 100

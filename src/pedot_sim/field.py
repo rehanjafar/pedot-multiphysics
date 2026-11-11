@@ -222,7 +222,7 @@ def _gs_sor_half_sweep(
 # Electric field and overpotential
 # ---------------------------------------------------------------------------
 
-def compute_electric_field(V: np.ndarray, grid: Grid2D) -> tuple[np.ndarray, np.ndarray]:
+def compute_electric_field(V: np.ndarray, grid: Grid2D, domain_mask=None) -> tuple[np.ndarray, np.ndarray]:
     """Compute electric field E = -grad(V) using central differences.
 
     Parameters
@@ -236,8 +236,18 @@ def compute_electric_field(V: np.ndarray, grid: Grid2D) -> tuple[np.ndarray, np.
     Ex, Ey : np.ndarray (Ny, Nx)
         Electric field components [V/m].
     """
-    Ey, Ex = np.gradient(V, grid.dy, grid.dx)
-    return -Ex, -Ey
+    if domain_mask is None:
+        Ey, Ex = np.gradient(V, grid.dy, grid.dx)
+        return -Ex, -Ey
+    components = []
+    for axis, spacing in [(1, grid.dx), (0, grid.dy)]:
+        plus = np.roll(V, -1, axis); minus = np.roll(V, 1, axis)
+        mp = np.roll(domain_mask, -1, axis); mm = np.roll(domain_mask, 1, axis)
+        edge = [slice(None), slice(None)]; edge[axis] = -1; mp[tuple(edge)] = False
+        edge[axis] = 0; mm[tuple(edge)] = False
+        grad = (np.where(mp, plus, V) - np.where(mm, minus, V)) / (2*spacing)
+        components.append(np.where(domain_mask, -grad, 0.))
+    return tuple(components)
 
 
 def compute_field_magnitude(Ex: np.ndarray, Ey: np.ndarray) -> np.ndarray:
@@ -248,26 +258,55 @@ def compute_field_magnitude(Ex: np.ndarray, Ey: np.ndarray) -> np.ndarray:
 def get_overpotential_at_bpe(
     V: np.ndarray,
     electrode_mask: np.ndarray,
+    concentration=None, physics=None,
 ) -> np.ndarray:
-    """Compute overpotential along the BPE surface.
+    """Balance signed phenomenological BV current with a uniform metal potential.
 
-    For a floating bipolar electrode, the BPE assumes a uniform potential
-    V_bpe equal to the average solution potential at the electrode surface.
-    The local overpotential is:
-        eta(x) = V_solution(x) - V_bpe
-
-    Parameters
-    ----------
-    V : np.ndarray (Ny, Nx)
-        Solution potential field [V].
-    electrode_mask : np.ndarray (Ny, Nx)
-        Boolean mask of BPE cells.
-
-    Returns
-    -------
-    eta : np.ndarray
-        1D array of overpotential values along the electrode [V].
+    eta = metal - solution (zero reference equilibrium). This is a weak-coupling
+    proxy; it does not solve interfacial polarization of the electrolyte or a
+    calibrated cathodic counter-reaction, so cannot predict cell current.
     """
-    V_at_electrode = V[electrode_mask]
-    V_bpe = np.mean(V_at_electrode)
-    return V_at_electrode - V_bpe
+    from scipy.optimize import brentq
+    from .kinetics import butler_volmer_flux
+    values = V[electrode_mask]
+    if values.size == 0:
+        raise ValueError("Electrode has no cells")
+    if concentration is None or physics is None:
+        raise ValueError("Floating potential requires concentration and kinetics")
+    weights = concentration[electrode_mask]
+    if not np.any(weights > 0):
+        return np.zeros_like(values)
+    def net(metal):
+        return float(np.sum(butler_volmer_flux(metal-values, physics.j0,
+            weights, physics.C_bulk, physics.alpha, physics.n_electrons, physics.T)))
+    metal = brentq(net, float(values.min()-1.), float(values.max()+1.), xtol=1e-13)
+    return metal-values
+
+
+from functools import lru_cache
+
+
+@lru_cache(maxsize=8)
+def _unit_potential(shape, mask_bytes, left_bytes, right_bytes, dx, dy, tol, max_iter):
+    from types import SimpleNamespace
+    mask = np.frombuffer(mask_bytes, dtype=bool).reshape(shape)
+    left = np.frombuffer(left_bytes, dtype=bool).reshape(shape)
+    right = np.frombuffer(right_bytes, dtype=bool).reshape(shape)
+    grid = SimpleNamespace(dx=dx, dy=dy)
+    V, iterations, residual = solve_laplace_2d(
+        grid, mask, .5, -.5, left, right, np.zeros(shape, dtype=bool),
+        tol=tol, max_iter=max_iter)
+    if residual >= tol:
+        raise RuntimeError("Laplace solver did not converge")
+    V.setflags(write=False)
+    return V, iterations, residual
+
+
+def fixed_domain_potential(domain, applied_voltage, tol, max_iter, voltage_bound):
+    """Scale a cached unit-drive solution without weakening absolute tolerance."""
+    unit_tol = tol/max(1., voltage_bound)
+    V, iterations, residual = _unit_potential(
+        domain.domain_mask.shape, domain.domain_mask.tobytes(),
+        domain.left_feeder_mask.tobytes(), domain.right_feeder_mask.tobytes(),
+        domain.grid.dx, domain.grid.dy, unit_tol, max_iter)
+    return V*applied_voltage, iterations, residual*abs(applied_voltage)

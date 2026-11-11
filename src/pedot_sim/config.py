@@ -30,10 +30,8 @@ class GeometryConfig:
     geometry_type: str = "narrow"  # "narrow" or "wide"
 
     def __post_init__(self) -> None:
-        if self.geometry_type == "narrow":
-            self.bridge_width = C.BRIDGE_WIDTH_NARROW
-        elif self.geometry_type == "wide":
-            self.bridge_width = C.BRIDGE_WIDTH_WIDE
+        if self.bridge_width <= 0:
+            raise ValueError("bridge_width must be positive; geometry_type is a label only")
 
 
 @dataclass
@@ -59,7 +57,7 @@ class PhysicsConfig:
     diffusion_coefficient: float = C.D_EDOT_DEFAULT  # [m^2/s]
     viscosity: float = 0.003  # [Pa*s]
     conductivity: float = C.SIGMA_ELECTROLYTE  # [S/m]
-    ionic_strength: float = 0.1  # [mol/L] (affects conductivity)
+    ionic_strength: float = 0.1  # [mol/L] metadata; conductivity is independently specified
     C_bulk: float = C.C_BULK_DEFAULT  # [mol/m^3]
     k_rxn: float = C.K_RXN_DEFAULT  # [m/s]
     j0: float = C.J0_DEFAULT  # [A/m^2]
@@ -68,6 +66,9 @@ class PhysicsConfig:
     beta_field: float = C.BETA_FIELD
     z_species: int = C.Z_EDOT
     T: float = C.T_DEFAULT  # [K]
+    deposited_molar_mass: float = C.M_PEDOT_REPEAT  # dry neutral repeat [kg/mol]
+    film_density: float = C.RHO_PEDOT  # assumed effective film density [kg/m^3]
+    deposition_efficiency: float = 1.0  # fraction of consumed monomer retained in film
 
 
 @dataclass
@@ -78,17 +79,17 @@ class NumericalConfig:
     dt: float = 0.01  # Time step [s]
     t_end: float = 100.0  # Total simulation time [s]
     n_snapshots: int = 20  # Number of field snapshots to save
-    implicit_theta: float = 0.5  # 0=explicit, 0.5=Crank-Nicolson, 1=fully implicit
+    implicit_theta: float = 1.0  # positivity-preserving backward Euler by default
     laplace_tol: float = 1.0e-6  # Laplace solver tolerance
     laplace_max_iter: int = 10000  # Max iterations for Laplace solver
-    adaptive_dt: bool = False  # Enable adaptive time-stepping
-    cfl_safety: float = 0.8  # CFL safety factor
+    adaptive_dt: bool = False  # Unsupported; True is explicitly rejected
+    cfl_safety: float = 0.8  # Migration substep probability/CFL limit
 
 
 @dataclass
 class NucleationConfig:
     """Stochastic nucleation settings."""
-    enable_noise: bool = True
+    enable_noise: bool = False
     noise_amplitude: float = 1.0e-9  # [m] initial perturbation amplitude
     nucleation_rate: float = 1.0e3  # Poisson rate parameter [events/(m*s)]
     seed: int = 42
@@ -98,7 +99,7 @@ class NucleationConfig:
 class OutputConfig:
     """Output and visualization settings."""
     save_fields: bool = True
-    save_animations: bool = True
+    save_animations: bool = False
     dpi: int = 300
     animation_fps: int = 20
     figure_format: str = "png"  # png / svg
@@ -138,6 +139,83 @@ class SimConfig:
         return copy.deepcopy(self)
 
 
+def validate_config(config: SimConfig) -> None:
+    """Reject invalid or silently unsupported inputs before writing any output."""
+    import math
+    def finite(value):
+        if isinstance(value, dict):
+            return all(finite(v) for v in value.values())
+        if isinstance(value, (list, tuple)):
+            return all(finite(v) for v in value)
+        return not isinstance(value, (int, float)) or math.isfinite(value)
+    if not finite(asdict(config)):
+        raise ValueError("Configuration numbers must be finite")
+    n, g, ph, w = config.numerical, config.geometry, config.physics, config.waveform
+    for name, value, minimum in (
+        ("Nx", n.Nx, 3), ("Ny", n.Ny, 3), ("n_snapshots", n.n_snapshots, 0),
+        ("laplace_max_iter", n.laplace_max_iter, 1),
+        ("seed", config.nucleation.seed, 0), ("n_electrons", ph.n_electrons, 1),
+        ("dpi", config.output.dpi, 1), ("animation_fps", config.output.animation_fps, 1),
+        ("n_replicates", config.batch.n_replicates, 1),
+        ("max_workers", config.batch.max_workers, 1),
+        ("n_dense_samples", config.batch.n_dense_samples, 1),
+    ):
+        if type(value) is not int or value < minimum:
+            raise ValueError(f"{name} must be an integer >= {minimum}")
+    if type(ph.z_species) is not int:
+        raise ValueError("z_species must be an integer charge number")
+    for name, value in (("enable_noise", config.nucleation.enable_noise),
+                        ("save_fields", config.output.save_fields),
+                        ("save_animations", config.output.save_animations),
+                        ("adaptive_dt", n.adaptive_dt)):
+        if type(value) is not bool:
+            raise ValueError(f"{name} must be a boolean")
+    if n.adaptive_dt:
+        raise ValueError("adaptive_dt is not implemented; use timestep refinement")
+    if n.dt <= 0 or n.t_end <= 0 or not 0 <= n.implicit_theta <= 1:
+        raise ValueError("Invalid timestep, duration or theta")
+    if n.laplace_tol <= 0 or not 0 < n.cfl_safety <= 1:
+        raise ValueError("Invalid solver settings")
+    if min(g.compartment_width, g.compartment_height, g.bridge_length,
+           g.bridge_width, g.electrode_length) <= 0:
+        raise ValueError("Geometry dimensions must be positive")
+    if g.bridge_width > g.compartment_height or g.electrode_length > g.bridge_length:
+        raise ValueError("Bridge/electrode does not fit domain")
+    if g.electrode_y_fraction != 0.5:
+        raise ValueError("Only a centred electrode is currently supported")
+    if ph.physics_stage not in ("A", "B", "C", "D"):
+        raise ValueError("Unknown physics stage; use A, B, C or D")
+    if min(ph.C_bulk, ph.T, ph.viscosity, ph.conductivity,
+           ph.deposited_molar_mass, ph.film_density) <= 0:
+        raise ValueError("Concentration, temperature, viscosity, conductivity and material properties must be positive")
+    if min(ph.diffusion_coefficient, ph.k_rxn, ph.j0, ph.beta_field, ph.ionic_strength) < 0:
+        raise ValueError("Transport and kinetic parameters must be nonnegative")
+    if not 0 < ph.alpha < 1 or not 0 <= ph.deposition_efficiency <= 1:
+        raise ValueError("Invalid transfer coefficient or deposition efficiency")
+    if w.frequency <= 0 or w.V_AC < 0 or w.waveform_type not in ("sinusoidal", "pulsed", "asymmetric_adc"):
+        raise ValueError("Invalid waveform")
+    if not 0 < w.duty_cycle < 1 or not 0 <= w.rest_fraction < 1 or not 0 <= w.adc_ratio <= 1:
+        raise ValueError("Invalid waveform fractions")
+    if config.nucleation.nucleation_rate < 0 or config.nucleation.noise_amplitude < 0:
+        raise ValueError("Invalid stochastic settings")
+    if config.output.figure_format not in ("png", "svg"):
+        raise ValueError("Unsupported figure format")
+    for name in ("freq_range", "D_range", "V_DC_range", "V_AC_range"):
+        values = getattr(config.batch, name)
+        if len(values) != 2 or values[0] >= values[1]:
+            raise ValueError(f"{name} must contain two increasing bounds")
+        if name in ("freq_range", "D_range") and values[0] <= 0:
+            raise ValueError(f"{name} must be positive")
+        if name == "V_AC_range" and values[0] < 0:
+            raise ValueError("V_AC_range must be nonnegative")
+    if not config.batch.frequencies or any(f <= 0 for f in config.batch.frequencies):
+        raise ValueError("Batch frequencies must be positive and nonempty")
+    if not config.batch.D_levels or not set(config.batch.D_levels) <= set(C.D_LEVELS):
+        raise ValueError("Unknown or empty D_levels")
+    if not config.batch.geometries or not set(config.batch.geometries) <= {"narrow", "wide"}:
+        raise ValueError("Unknown or empty batch geometries")
+
+
 def _to_serializable(obj: Any) -> Any:
     """Convert dataclass fields to JSON-serializable types."""
     if isinstance(obj, dict):
@@ -164,6 +242,9 @@ def load_config(path: Path) -> SimConfig:
     with open(path) as f:
         data = json.load(f)
 
+    allowed = {"geometry", "waveform", "physics", "numerical", "nucleation", "output", "batch"}
+    if not isinstance(data, dict) or set(data) - allowed:
+        raise ValueError("Configuration contains unknown top-level sections")
     geo = GeometryConfig(**data.get("geometry", {}))
     wav = WaveformConfig(**data.get("waveform", {}))
     phy = PhysicsConfig(**data.get("physics", {}))
@@ -174,7 +255,9 @@ def load_config(path: Path) -> SimConfig:
     batch_data = data.get("batch", {})
     bat = BatchConfig(**batch_data)
 
-    return SimConfig(
+    config = SimConfig(
         geometry=geo, waveform=wav, physics=phy,
         numerical=num, nucleation=nuc, output=out, batch=bat,
     )
+    validate_config(config)
+    return config
