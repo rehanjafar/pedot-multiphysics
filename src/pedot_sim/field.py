@@ -240,12 +240,17 @@ def compute_electric_field(V: np.ndarray, grid: Grid2D, domain_mask=None) -> tup
         Ey, Ex = np.gradient(V, grid.dy, grid.dx)
         return -Ex, -Ey
     components = []
-    for axis, spacing in [(1, grid.dx), (0, grid.dy)]:
+    for axis, coords in [(1, grid.x), (0, grid.y)]:
         plus = np.roll(V, -1, axis); minus = np.roll(V, 1, axis)
         mp = np.roll(domain_mask, -1, axis); mm = np.roll(domain_mask, 1, axis)
         edge = [slice(None), slice(None)]; edge[axis] = -1; mp[tuple(edge)] = False
         edge[axis] = 0; mm[tuple(edge)] = False
-        grad = (np.where(mp, plus, V) - np.where(mm, minus, V)) / (2*spacing)
+        # Interpolate neighboring face gradients to a cell value. Insulated faces contribute zero.
+        dp = np.r_[np.diff(coords), np.diff(coords)[-1]]
+        dm = np.r_[np.diff(coords)[0], np.diff(coords)]
+        shape = (1, -1) if axis == 1 else (-1, 1)
+        grad = .5*(np.where(mp, plus-V, 0.)/dp.reshape(shape)
+                   + np.where(mm, V-minus, 0.)/dm.reshape(shape))
         components.append(np.where(domain_mask, -grad, 0.))
     return tuple(components)
 
@@ -258,7 +263,7 @@ def compute_field_magnitude(Ex: np.ndarray, Ey: np.ndarray) -> np.ndarray:
 def get_overpotential_at_bpe(
     V: np.ndarray,
     electrode_mask: np.ndarray,
-    concentration=None, physics=None,
+    concentration=None, physics=None, surface_weights=None,
 ) -> np.ndarray:
     """Balance signed phenomenological BV current with a uniform metal potential.
 
@@ -274,11 +279,14 @@ def get_overpotential_at_bpe(
     if concentration is None or physics is None:
         raise ValueError("Floating potential requires concentration and kinetics")
     weights = concentration[electrode_mask]
+    area = np.ones_like(values) if surface_weights is None else np.asarray(surface_weights)
+    if area.shape != values.shape or not np.isfinite(area).all() or np.any(area <= 0):
+        raise ValueError("Surface weights must be positive, finite and match the electrode")
     if not np.any(weights > 0):
         return np.zeros_like(values)
     def net(metal):
         return float(np.sum(butler_volmer_flux(metal-values, physics.j0,
-            weights, physics.C_bulk, physics.alpha, physics.n_electrons, physics.T)))
+            weights, physics.C_bulk, physics.alpha, physics.n_electrons, physics.T)*area))
     metal = brentq(net, float(values.min()-1.), float(values.max()+1.), xtol=1e-13)
     return metal-values
 
@@ -302,8 +310,39 @@ def _unit_potential(shape, mask_bytes, left_bytes, right_bytes, dx, dy, tol, max
     return V, iterations, residual
 
 
+@lru_cache(maxsize=8)
+def _graded_unit_potential(shape, mask_bytes, left_bytes, right_bytes, x, y, wx, wy):
+    from types import SimpleNamespace
+    from .transport import _diffusion_operator
+    from scipy.sparse.linalg import spsolve
+    mask = np.frombuffer(mask_bytes, dtype=bool).reshape(shape)
+    left = np.frombuffer(left_bytes, dtype=bool).reshape(shape)
+    right = np.frombuffer(right_bytes, dtype=bool).reshape(shape)
+    grid = SimpleNamespace(x=np.array(x), y=np.array(y), widths_x=np.array(wx),
+                           widths_y=np.array(wy), dx=min(wx), dy=min(wy))
+    L = _diffusion_operator(grid, mask)
+    free = (mask & ~(left|right)).ravel()
+    fixed = (left|right).ravel()
+    v = np.zeros(mask.size); v[left.ravel()] = .5; v[right.ravel()] = -.5
+    v[free] = spsolve(L[free][:, free], -L[free][:, fixed]@v[fixed])
+    residual = float(np.max(np.abs((L@v)[free]/L.diagonal()[free])))
+    if not np.isfinite(v).all():
+        raise ValueError("Nonfinite graded-grid potential")
+    v = v.reshape(shape); v.setflags(write=False)
+    return v, residual
+
+
 def fixed_domain_potential(domain, applied_voltage, tol, max_iter, voltage_bound):
     """Scale a cached unit-drive solution without weakening absolute tolerance."""
+    if hasattr(domain.grid, "widths_x"):
+        from .utils_grid import cell_widths
+        wx, wy = cell_widths(domain.grid)
+        V, residual = _graded_unit_potential(domain.domain_mask.shape, domain.domain_mask.tobytes(),
+            domain.left_feeder_mask.tobytes(), domain.right_feeder_mask.tobytes(),
+            tuple(domain.grid.x), tuple(domain.grid.y), tuple(wx), tuple(wy))
+        if residual*max(1., voltage_bound) >= tol:
+            raise RuntimeError("Graded-grid Laplace solve failed the normalized residual tolerance")
+        return V*applied_voltage, 1, residual*abs(applied_voltage)
     unit_tol = tol/max(1., voltage_bound)
     V, iterations, residual = _unit_potential(
         domain.domain_mask.shape, domain.domain_mask.tobytes(),

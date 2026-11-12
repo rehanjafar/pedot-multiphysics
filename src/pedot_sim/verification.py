@@ -18,7 +18,7 @@ import pandas as pd
 
 from .config import SimConfig
 from .runner_single import run_single
-from .utils_io import ensure_dir, load_json, save_csv, save_json
+from .utils_io import ensure_dir, save_csv, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +48,10 @@ def run_mesh_refinement(
         Convergence data.
     """
     if mesh_sizes is None:
-        mesh_sizes = [50, 100, 200]
+        mesh_sizes = [100, 200, 400] if config.numerical.mesh_stretch else [50, 100, 200]
 
+    if len(mesh_sizes) < 3 or any(type(n) is not int or n < 5 for n in mesh_sizes) or any(a >= b for a,b in zip(mesh_sizes[:-1],mesh_sizes[1:])):
+        raise ValueError("Mesh refinement requires >=3 strictly increasing integer resolutions >=5")
     output_base = Path(output_base)
     results = []
 
@@ -65,7 +67,11 @@ def run_mesh_refinement(
             metrics = run_single(cfg, run_id, output_base, campaign_id)
             results.append({
                 "N": N,
-                "dx": (2*cfg.geometry.compartment_width + cfg.geometry.bridge_length) / (N-1),
+                "dx": metrics.get("maximum_dx", np.nan),
+                "minimum_dx": metrics.get("minimum_dx", np.nan),
+                "minimum_dy": metrics.get("minimum_dy", np.nan),
+                "grid_cells_x": metrics.get("grid_cells_x", N),
+                "grid_cells_y": metrics.get("grid_cells_y", N),
                 "AI": metrics.get("AI", np.nan),
                 "UI": metrics.get("UI", np.nan),
                 "depletion_depth": metrics.get("depletion_depth", np.nan),
@@ -74,12 +80,12 @@ def run_mesh_refinement(
             })
         except Exception as e:
             logger.error("Mesh refinement failed for N=%d: %s", N, e)
-            results.append({"N": N, "dx": np.nan, "AI": np.nan, "UI": np.nan})
+            results.append({"N": N, "dx": np.nan, "AI": np.nan, "UI": np.nan, "mean_h": np.nan, "effective_dt": np.nan})
 
     df = pd.DataFrame(results)
 
     # Richardson extrapolation (if 3+ points)
-    if len(df) >= 3 and not df["AI"].isna().any():
+    if config.numerical.mesh_stretch == 0 and len(df) >= 3 and not df["AI"].isna().any():
         df["AI_error_estimate"] = _richardson_error(df["AI"].values, df["dx" if "dx" in df else "effective_dt"].values)
         df["UI_error_estimate"] = _richardson_error(df["UI"].values, df["dx" if "dx" in df else "effective_dt"].values)
 
@@ -137,7 +143,7 @@ def run_timestep_refinement(
             })
         except Exception as e:
             logger.error("Timestep refinement failed for dt=%e: %s", dt_val, e)
-            results.append({"dt": dt_val, "AI": np.nan, "UI": np.nan})
+            results.append({"dt": dt_val, "AI": np.nan, "UI": np.nan, "mean_h": np.nan, "effective_dt": np.nan})
 
     df = pd.DataFrame(results)
 
@@ -217,8 +223,9 @@ def run_full_verification(
     config: SimConfig,
     campaign_id: str,
     output_base: Path,
+    mesh_sizes=None,
 ) -> None:
-    """Run complete verification suite."""
+    """Run complete verification suite at user-selected spatial resolutions."""
     output_base = Path(output_base)
     fig_dir = ensure_dir(output_base / "reports" / campaign_id / "figures")
 
@@ -227,10 +234,12 @@ def run_full_verification(
     cfg.nucleation.enable_noise = False
 
     logger.info("Running mesh refinement study...")
-    mesh_df = run_mesh_refinement(cfg, campaign_id, output_base)
+    mesh_df = run_mesh_refinement(cfg, campaign_id, output_base, mesh_sizes)
     plot_convergence(mesh_df, "N", fig_dir / "verification_mesh.png", "Mesh Refinement")
 
     logger.info("Running timestep refinement study...")
+    # Timestep refinement must use the finest spatial level just evaluated.
+    cfg.numerical.Nx = cfg.numerical.Ny = int(mesh_df.N.iloc[-1])
     dt_df = run_timestep_refinement(cfg, campaign_id, output_base)
     plot_convergence(dt_df, "dt", fig_dir / "verification_timestep.png", "Timestep Refinement")
 

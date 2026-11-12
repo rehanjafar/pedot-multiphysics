@@ -8,6 +8,7 @@ from __future__ import annotations
 import numpy as np
 
 from . import constants
+from .utils_grid import cell_widths, cell_areas, electrode_weights
 
 
 METRIC_UNITS = {
@@ -32,26 +33,29 @@ def ohmic_power_per_depth(V, domain, conductivity):
     if V is None:
         return None
     mask, g = domain.domain_mask, domain.grid
-    x = (mask[:, 1:] & mask[:, :-1]) * np.diff(V, axis=1)**2 * g.dy/g.dx
-    y = (mask[1:, :] & mask[:-1, :]) * np.diff(V, axis=0)**2 * g.dx/g.dy
+    wx, wy = cell_widths(g)
+    x = (mask[:, 1:] & mask[:, :-1])*np.diff(V, axis=1)**2*wy[:, None]/np.diff(g.x)[None, :]
+    y = (mask[1:, :] & mask[:-1, :])*np.diff(V, axis=0)**2*wx[None, :]/np.diff(g.y)[:, None]
     return float(conductivity * (x.sum()+y.sum()))
 
 
 def process_diagnostics(config, domain, initial_C, final_C, h, consumed, reservoir, energy):
     """Audit the complete discrete material balance and summarize process proxies."""
     ph, grid = config.physics, domain.grid
-    initial = float(np.sum(initial_C[domain.domain_mask])*grid.dx*grid.dy)
-    remaining = float(np.sum(final_C[domain.domain_mask])*grid.dx*grid.dy)
-    retained = float(np.sum(h)*grid.dx*ph.film_density/ph.deposited_molar_mass)
+    volumes = cell_areas(grid)
+    weights = electrode_weights(grid, domain.electrode_mask)
+    initial = float(np.sum(initial_C*volumes))
+    remaining = float(np.sum(final_C*volumes))
+    retained = float(np.sum(h*weights)*ph.film_density/ph.deposited_molar_mass)
     error = initial + reservoir - remaining - consumed
     film_error = retained - consumed*ph.deposition_efficiency
     tolerance = 1e-10 * max(initial, abs(reservoir), consumed, 1e-30)
     if abs(error) > tolerance or abs(film_error) > tolerance:
         raise ValueError("Material balance failed; no manufacturing conclusions may be drawn")
     mass = retained*ph.deposited_molar_mass
-    mean = float(np.mean(h))
+    mean = float(np.average(h, weights=weights))
     half = len(h)//2
-    left, right = float(np.sum(h[:half])), float(np.sum(h[-half:]))
+    left, right = float(np.sum(h[:half]*weights[:half])), float(np.sum(h[-half:]*weights[-half:]))
     diffusion_length = float(np.sqrt(ph.diffusion_coefficient/config.waveform.frequency))
     metrics = {
         "initial_inventory_mol_per_m": initial,
@@ -64,13 +68,13 @@ def process_diagnostics(config, domain, initial_C, final_C, h, consumed, reservo
         "mass_balance_error_mol_per_m": error,
         "film_balance_error_mol_per_m": film_error,
         "equivalent_charge_C_per_m": consumed*ph.n_electrons*constants.F,
-        "thickness_cv": float(np.std(h)/mean) if mean > 0 else None,
-        "left_right_asymmetry": (right-left)/float(np.sum(h)) if np.sum(h)>0 else None,
+        "thickness_cv": float(np.sqrt(np.average((h-mean)**2,weights=weights))/mean) if mean > 0 else None,
+        "left_right_asymmetry": (right-left)/float(np.sum(h*weights)) if np.sum(h)>0 else None,
         "electrolyte_ohmic_energy_J_per_m": energy,
         "electrolyte_energy_per_deposited_mass_J_per_kg": energy/mass if energy is not None and mass>0 else None,
         "diffusion_length_per_period": diffusion_length,
         "cells_per_diffusion_length": diffusion_length/grid.dy,
-        "resolved_electrode_length": len(h)*grid.dx,
+        "resolved_electrode_length": float(np.sum(weights)),
     }
     warnings = [
         "Fixed strip and fixed electrolyte domain: no lateral fronts, dendrites, branching or geometry feedback.",

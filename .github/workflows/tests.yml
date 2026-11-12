@@ -8,15 +8,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.9', '3.12', '3.14']
+        python: ['3.11', '3.12', '3.13', '3.14', '3.15']
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev]"
+      - run: ruff check src tests --select F
       - run: pytest tests --cov=pedot_sim --cov-report=term-missing --cov-report=xml
         env:
           MPLBACKEND: Agg
       - run: python -m pip check
       - run: python -m pip wheel . --no-deps --wheel-dir dist
+  numerical-verification:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+      - run: pip install .
+      - run: pedot-sim verify --config configs/example_verify.json --campaign-id ci_refinement --mesh-sizes 100 200 400 --output-base verification-data
+        env:
+          MPLBACKEND: Agg

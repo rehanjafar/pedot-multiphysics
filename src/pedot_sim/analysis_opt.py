@@ -20,7 +20,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from .constants import D_LEVELS
 from .utils_io import ensure_dir, save_csv, save_json
 
 logger = logging.getLogger(__name__)

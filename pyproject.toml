@@ -1,14 +1,15 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pedot-multiphysics"
-version = "0.2.0"
+version = "0.4.0"
 description = "Multiphysics simulation of PEDOT electropolymerization"
 readme = "README.md"
-license = {text = "MIT"}
-requires-python = ">=3.9"
+license = "MIT AND CC-BY-4.0"
+license-files = ["LICENSE", "src/pedot_sim/datasets/janzakova2021/ATTRIBUTION.md"]
+requires-python = ">=3.11"
 authors = [
     {name = "Rehan Lab"},
 ]
@@ -18,32 +19,33 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Chemistry",
     "Topic :: Scientific/Engineering :: Physics",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
 ]
 dependencies = [
     "numpy>=1.24,<3",
     "scipy>=1.10,<2",
     "matplotlib>=3.7,<4",
-    "pandas>=2.0,<3",
+    "pandas>=2.0,<4",
     "statsmodels>=0.14,<1",
     "jinja2>=3.1,<4",
+    "plotly>=6,<7",
+    "pillow>=10,<14",
 ]
 
 [project.optional-dependencies]
-viz3d = [
-    "pyvista>=0.42,<1",
-]
+viz3d = []  # Kept for installation compatibility; 3D output is now a core feature.
 io = [
     "pyarrow>=14,<19",
     "imageio>=2.31,<3",
     "imageio[ffmpeg]",
 ]
 dev = [
-    "pytest>=7.4,<9",
-    "pytest-cov>=4.1,<6",
+    "pytest>=9.0.3,<10",
+    "pytest-cov>=6,<8",
     "ruff>=0.1,<1",
     "mypy>=1.5,<2",
 ]
@@ -58,17 +60,17 @@ pedot-sim = "pedot_sim.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-pedot_sim = ["templates/*.j2"]
+pedot_sim = ["templates/*.j2", "datasets/janzakova2021/*.csv", "datasets/janzakova2021/*.json", "datasets/janzakova2021/*.md"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import json
 import platform
-import time
-from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -192,4 +190,4 @@ def runtime_provenance():
         digest.update(file.name.encode())
         digest.update(file.read_bytes())
     return {"source_sha256": digest.hexdigest(), "python": platform.python_version(),
-            "packages": {name: version(name) for name in ("numpy", "scipy", "pandas", "matplotlib", "statsmodels", "jinja2")}}
+            "packages": {name: version(name) for name in ("numpy", "scipy", "pandas", "matplotlib", "statsmodels", "jinja2", "plotly", "pillow")}}

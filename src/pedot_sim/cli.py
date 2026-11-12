@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+from .config import SimConfig
+
 logger = logging.getLogger("pedot_sim")
 
 
@@ -177,7 +179,7 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     try:
         from pedot_sim.verification import run_full_verification
         print("Running mesh & timestep refinement studies...")
-        run_full_verification(config, args.campaign_id, output_base)
+        run_full_verification(config, args.campaign_id, output_base, args.mesh_sizes)
         print("Numerical verification complete.\n")
     except Exception as e:
         print(f"Numerical verification failed: {e}\n")
@@ -283,9 +285,42 @@ def _cmd_run_dendrite(args):
     return 0
 
 
+def _cmd_run_dendrite_batch(args):
+    from .dendrites import load_dendrite_config
+    from .dendrite_batch import run_dendrite_batch
+    print(run_dendrite_batch(load_dendrite_config(args.config), args.campaign_id,
+                            args.output_base, args.periods, args.replicates))
+    return 0
+
+
+def _cmd_analyze_manufacturing(args):
+    from .manufacturing import analyze_manufacturing
+    result = analyze_manufacturing(args.trace, args.metadata, args.output_dir)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def _cmd_analyze_dendrites(args):
     from .dendrites import analyze_dendrite_campaign
     print(analyze_dendrite_campaign(args.campaign_id, args.output_base))
+    return 0
+
+
+def _cmd_analyze_literature(args):
+    from .literature import analyze_literature
+    print(analyze_literature(args.output_dir))
+    return 0
+
+
+def _cmd_curate_literature(args):
+    from .literature import curate_source
+    curate_source(args.source_csv, args.output_dir)
+    return 0
+
+
+def _cmd_visualize_run(args):
+    from .research_figures import visualize_run
+    print(visualize_run(args.run_dir))
     return 0
 
 
@@ -468,6 +503,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Root output directory (default: data)",
     )
 
+    p_verify.add_argument("--mesh-sizes", type=int, nargs="+", help="Increasing resolution budgets, e.g. 100 200 400")
+
     # ---- analyze ---------------------------------------------------------
     p_analyze = subparsers.add_parser(
         "analyze",
@@ -509,6 +546,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_da = subparsers.add_parser("analyze-dendrites", help="Compare direct-wire morphology runs")
     p_da.add_argument("--campaign-id", required=True)
     p_da.add_argument("--output-base", type=Path, default=Path("data"))
+    p_db = subparsers.add_parser("run-dendrite-batch", help="Run reproducible frequency/seed sweeps in model units")
+    p_db.add_argument("--config", type=Path, required=True)
+    p_db.add_argument("--campaign-id", required=True)
+    p_db.add_argument("--output-base", type=Path, default=Path("data"))
+    p_db.add_argument("--periods", type=float, nargs="+", required=True)
+    p_db.add_argument("--replicates", type=int, default=5)
+    p_ma = subparsers.add_parser("analyze-manufacturing", help="Analyze measured electrical traces and optional film measurements")
+    for name in ("trace", "metadata", "output-dir"):
+        p_ma.add_argument("--"+name, type=Path, required=True)
+    p_lit = subparsers.add_parser("analyze-literature", help="Plot bundled, traceable published experimental data")
+    p_lit.add_argument("--output-dir", type=Path, required=True)
+    p_curate = subparsers.add_parser("curate-literature", help="Recreate reference subsets from the hash-verified original CSV")
+    p_curate.add_argument("--source-csv", type=Path, required=True)
+    p_curate.add_argument("--output-dir", type=Path, required=True)
+    p_vis = subparsers.add_parser("visualize-run", help="Generate offline 2D/3D galleries from archived values")
+    p_vis.add_argument("--run-dir", type=Path, required=True)
     return parser
 
 
@@ -517,6 +570,9 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 _COMMAND_DISPATCH = {
+    "analyze-literature": _cmd_analyze_literature,
+    "curate-literature": _cmd_curate_literature,
+    "visualize-run": _cmd_visualize_run,
     "run-single": _cmd_run_single,
     "run-batch": _cmd_run_batch,
     "verify": _cmd_verify,
@@ -525,6 +581,8 @@ _COMMAND_DISPATCH = {
     "validate": _cmd_validate,
     "run-dendrite": _cmd_run_dendrite,
     "analyze-dendrites": _cmd_analyze_dendrites,
+    "run-dendrite-batch": _cmd_run_dendrite_batch,
+    "analyze-manufacturing": _cmd_analyze_manufacturing,
 }
 
 

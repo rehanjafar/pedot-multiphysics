@@ -1,6 +1,6 @@
 # Experimental data
 
-No measured datasets are included. Synthetic test fixtures are only software tests.
+Published experimental and image-derived reference subsets are bundled in `src/pedot_sim/datasets/janzakova2021/` under CC BY 4.0. Run `pedot-sim analyze-literature --output-dir data/published_evidence` to inspect them. They are not a matched calibration dataset for this simulator. Synthetic test fixtures remain software tests, never experimental evidence.
 
 For `pedot-sim validate`, provide a CSV and JSON metadata with a source identifier
 and exact SI unit declarations. Thickness: `time,mean_h` [s,m]; profile: `x,h` [m,m];

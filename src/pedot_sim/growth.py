@@ -18,20 +18,17 @@ from typing import Optional
 
 import numpy as np
 
-from . import constants as const
 from .config import SimConfig
 from .field import (
     compute_electric_field,
     compute_field_magnitude,
     get_overpotential_at_bpe,
-    solve_laplace_2d,
     fixed_domain_potential,
 )
 from .geometry import DomainInfo
-from .kinetics import butler_volmer_flux, flux_to_growth_rate
 from .nucleation import NucleationModel
-from .transport import add_migration_flux, compute_reaction_rate, solve_diffusion_step
-from .utils_grid import Grid2D
+from .transport import add_migration_flux, compute_reaction_rate, solve_diffusion_step, reservoir_exchange
+from .utils_grid import cell_areas, electrode_weights
 from .waveforms import get_boundary_potentials, get_waveform
 
 logger = logging.getLogger(__name__)
@@ -84,6 +81,9 @@ def evolve_one_timestep(
     StepResult
     """
     grid = domain.grid
+    volumes = cell_areas(grid)
+    widths = electrode_weights(grid, domain.electrode_mask)
+    heights = volumes[domain.electrode_mask]/widths
     phy = config.physics
     stage = phy.physics_stage.upper()
     solver_info: dict = {}
@@ -111,70 +111,47 @@ def evolve_one_timestep(
         solver_info["laplace_residual"] = residual
 
 
-    # 4. Solve transport
-    C_new = solve_diffusion_step(
-        C=C,
-        grid=grid,
-        D=phy.diffusion_coefficient,
-        dt=dt,
-        R_sink=np.zeros_like(C),
-        domain_mask=domain.domain_mask,
-        C_bulk=phy.C_bulk,
-        left_feeder=domain.left_feeder_mask,
-        right_feeder=domain.right_feeder_mask,
-        theta=config.numerical.implicit_theta,
-    )
-
-    # Stage C/D: add migration
-    if stage in ("C", "D") and V_field is not None:
-        C_new = add_migration_flux(
-            C=C_new,
-            V=V_field,
-            grid=grid,
-            D=phy.diffusion_coefficient,
-            z=phy.z_species,
-            dt=dt,
-            domain_mask=domain.domain_mask,
-            T=phy.T,
-            cfl_safety=config.numerical.cfl_safety,
-        )
-        # Re-apply BCs
-        C_new[domain.left_feeder_mask] = phy.C_bulk
-        C_new[domain.right_feeder_mask] = phy.C_bulk
-        C_new = np.maximum(C_new, 0.0)
-
-    transported_inventory = float(np.sum(C_new) * grid.dx * grid.dy)
-
-    # One effective exposed interface per horizontal electrode cell:
-    # area/volume = dx/(dx*dy) = 1/dy, per unit out-of-plane depth.
+    # Freeze field/BV coefficients over this step, then solve diffusion and the
+    # linear concentration-dependent reaction together. Splitting a stiff surface
+    # sink from diffusion makes results depend spuriously on cell height.
     if stage == "D":
-        eta = get_overpotential_at_bpe(V_field, domain.electrode_mask, C_new, phy)
-    surface_flux = compute_reaction_rate(C_new, domain.electrode_mask, phy, E_mag, eta)
-    requested = surface_flux[domain.electrode_mask]
+        eta = get_overpotential_at_bpe(V_field, domain.electrode_mask, C, phy, widths)
+    reference_C = np.where(domain.domain_mask, phy.C_bulk, 0.)
+    reference_flux = compute_reaction_rate(reference_C, domain.electrode_mask, phy, E_mag, eta)
+    velocity = reference_flux[domain.electrode_mask]/phy.C_bulk
     if nucleation_model is not None:
-        requested *= nucleation_model.flux_multiplier(dt, grid.dx)
-    available = C_new[domain.electrode_mask]
-    coefficient = np.divide(requested, available, out=np.zeros_like(requested), where=available > 0)
-    remaining = available / (1 + dt * coefficient / grid.dy)
-    consumed = available - remaining
-    C_new[domain.electrode_mask] = remaining
-    R_field = np.zeros_like(C)
-    R_field[domain.electrode_mask] = consumed / dt
-    R_at_electrode = consumed * grid.dy / dt
+        velocity *= nucleation_model.flux_multiplier(dt, widths)
+    coefficient = np.zeros_like(C)
+    coefficient[domain.electrode_mask] = velocity/heights
+    C_new = solve_diffusion_step(C, grid, phy.diffusion_coefficient, dt,
+        np.zeros_like(C), domain.domain_mask, phy.C_bulk, domain.left_feeder_mask,
+        domain.right_feeder_mask, config.numerical.implicit_theta,
+        reaction_coefficient=coefficient)
+    R_field = coefficient*C_new
+    R_at_electrode = velocity*C_new[domain.electrode_mask]
+    consumed = dt*R_field[domain.electrode_mask]
+    feeders = domain.left_feeder_mask | domain.right_feeder_mask
+    exchange = reservoir_exchange(C, C_new, grid, phy.diffusion_coefficient, dt,
+        config.numerical.implicit_theta, domain.domain_mask, feeders)
+    if stage in ("C", "D") and V_field is not None:
+        C_new = add_migration_flux(C_new, V_field, grid, phy.diffusion_coefficient,
+            phy.z_species, dt, domain.domain_mask, T=phy.T, cfl_safety=config.numerical.cfl_safety)
+        exchange += float(np.sum((phy.C_bulk-C_new[feeders])*volumes[feeders]))
+        C_new[feeders] = phy.C_bulk
     dhdt = (R_at_electrode * phy.deposited_molar_mass
             * phy.deposition_efficiency / phy.film_density)
     h_new = h + dt * dhdt
     if not np.isfinite(C_new).all() or not np.isfinite(h_new).all():
         raise ValueError("Nonfinite simulation state")
 
-    solver_info["reservoir_exchange_mol_per_m"] = transported_inventory - float(np.sum(C)*grid.dx*grid.dy)
-    solver_info["consumed_mol_per_m"] = float(np.sum(consumed)*grid.dx*grid.dy)
+    solver_info["reservoir_exchange_mol_per_m"] = exchange
+    solver_info["consumed_mol_per_m"] = float(np.sum(consumed*volumes[domain.electrode_mask]))
     solver_info["applied_voltage_midpoint"] = V_applied
 
     # Compute flux diagnostics
-    mean_flux = float(np.mean(R_at_electrode)) if len(R_at_electrode) > 0 else 0.0
-    total_flux = float(np.sum(R_at_electrode) * grid.dx) if len(R_at_electrode) > 0 else 0.0
-    growth_rate_val = float(np.mean(dhdt)) if len(dhdt) > 0 else 0.0
+    mean_flux = float(np.average(R_at_electrode, weights=widths)) if len(R_at_electrode) > 0 else 0.0
+    total_flux = float(np.sum(R_at_electrode*widths)) if len(R_at_electrode) > 0 else 0.0
+    growth_rate_val = float(np.average(dhdt, weights=widths)) if len(dhdt) > 0 else 0.0
 
     return StepResult(
         C=C_new,

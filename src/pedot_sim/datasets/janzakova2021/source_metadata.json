@@ -1,0 +1,67 @@
+{
+  "authors": [
+    "Kamila Janzakova",
+    "Ankush Kumar",
+    "Mahdi Ghazal",
+    "Anna Susloparova",
+    "Yannick Coffinier",
+    "Fabien Alibart",
+    "S\u00e9bastien Pecqueur"
+  ],
+  "paper_doi": "10.1038/s41467-021-27274-9",
+  "dataset_doi": "10.6084/m9.figshare.16814710.v1",
+  "license": "CC BY 4.0",
+  "license_url": "https://creativecommons.org/licenses/by/4.0/",
+  "source_url": "https://ndownloader.figshare.com/files/31090411",
+  "source_filename": "dataset.csv",
+  "source_sha256": "3a6dac6f58120cf5c05469952846da6718f72ddaac8cbc049d5cbec1070129fc",
+  "source_md5": "aafa210eee5ddfa4f44a48cf656623c1",
+  "source_bytes": 2608639,
+  "changes": [
+    "Selected six experimental/image-analysis sections; excluded circuit modeling and fits.",
+    "Reshaped to tidy CSV; converted mm\u00b2 to m\u00b2; retained original row/column coordinates.",
+    "Selected only first CV cycles; retained acquisition order and Ag/AgCl potential reference.",
+    "Flagged the unresolved zero-area entry at 10 Hz; did not alter or impute it."
+  ],
+  "sections": {
+    "amplitude_morphology": {
+      "rows": 7,
+      "sha256": "089aafa652fb7d716c531f4c5ed46e9979694ea0d96c84dcf8fa24f3f23c626f"
+    },
+    "frequency_morphology": {
+      "rows": 12,
+      "sha256": "62b5ee1ad5d9d378907cc9aaed9e80896b1320d4666fae8bcbf8fd32ae7cf8da"
+    },
+    "offset_morphology": {
+      "rows": 10,
+      "sha256": "956dbcbfdb6350073e16af987642434d7def0120747f0796ac6ecc3e747ac8e7"
+    },
+    "growth_traces": {
+      "rows": 672,
+      "sha256": "4aecd91f099af77e2d1b411bcb3e77ff4cb2d7bacfe91392d949c1f91601bd08"
+    },
+    "impedance": {
+      "rows": 183,
+      "sha256": "ed8a3c1aa4ceee17245f057cf10580472a18a44b6f03b914c96684b3b706ff23"
+    },
+    "cyclic_voltammetry": {
+      "rows": 1254,
+      "sha256": "1e4e7ecc5f66ba9bb2f6a4f92e5fb1e25acebd3b98390e7667aa0d70d51322c8"
+    }
+  },
+  "experimental_context": {
+    "gold_wire_diameter_m": 2.5e-05,
+    "gap_m": 0.00024,
+    "aqueous_droplet_m3": 2e-08,
+    "EDOT_mol_m3": 10.0,
+    "BQ_mol_m3": 10.0,
+    "NaPSS_mol_m3": 1.0,
+    "amplitude_series": "80 Hz, 50% duty, zero offset",
+    "frequency_series": "5 V peak, 50% duty, zero offset",
+    "offset_series": "5 V peak, 80 Hz, 50% duty",
+    "impedance_medium": "1 mM NaPSS without EDOT or BQ; after growth",
+    "concentration_basis": "NaPSS molarity as reported by the source; not an inferred polymer-chain concentration"
+  },
+  "uncertainty": "Branching SD is spatial variation across six image positions, not independent experiments. Instrument/segmentation uncertainties are not supplied here.",
+  "calibration_status": "Published reference observations; no calibration to this simulator or the user experiment."
+}
